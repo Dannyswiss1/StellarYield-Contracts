@@ -599,6 +599,10 @@ impl SingleRWAVault {
         bump_instance(e);
     }
 
+    pub fn is_blacklisted(e: &Env, address: Address) -> bool {
+        get_blacklisted(e, &address)
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // Emergency
     // ─────────────────────────────────────────────────────────────────
