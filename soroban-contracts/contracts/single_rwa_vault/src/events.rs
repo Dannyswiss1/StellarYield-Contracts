@@ -96,3 +96,101 @@ pub fn emit_burn(e: &Env, from: Address, amount: i128) {
         amount,
     );
 }
+
+// ERC-4626 vault events
+
+/// Emitted by `deposit` and `mint`.
+/// Mirrors ERC-4626 `Deposit(caller, owner, assets, shares)`.
+pub fn emit_deposit(
+    e: &Env,
+    caller: Address,
+    receiver: Address,
+    assets: i128,
+    shares: i128,
+) {
+    e.events().publish(
+        (symbol_short!("deposit"), caller, receiver),
+        (assets, shares),
+    );
+}
+
+/// Emitted by `withdraw` and `redeem`.
+/// Mirrors ERC-4626 `Withdraw(caller, receiver, owner, assets, shares)`.
+pub fn emit_withdraw(
+    e: &Env,
+    caller: Address,
+    receiver: Address,
+    owner: Address,
+    assets: i128,
+    shares: i128,
+) {
+    e.events().publish(
+        (symbol_short!("withdraw"), caller, receiver, owner),
+        (assets, shares),
+    );
+}
+
+/// Emitted by `redeem_at_maturity` — includes auto-claimed yield.
+pub fn emit_redeem_at_maturity(
+    e: &Env,
+    owner: Address,
+    receiver: Address,
+    shares: i128,
+    assets: i128,
+    yield_claimed: i128,
+) {
+    e.events().publish(
+        (symbol_short!("mat_redm"), owner, receiver),
+        (shares, assets, yield_claimed),
+    );
+}
+
+/// Emitted by `request_early_redemption`.
+pub fn emit_early_redemption_requested(
+    e: &Env,
+    user: Address,
+    request_id: u32,
+    shares: i128,
+) {
+    e.events().publish(
+        (symbol_short!("erq_req"), user),
+        (request_id, shares),
+    );
+}
+
+/// Emitted by `process_early_redemption`.
+pub fn emit_early_redemption_processed(
+    e: &Env,
+    user: Address,
+    request_id: u32,
+    net_assets: i128,
+) {
+    e.events().publish(
+        (symbol_short!("erq_done"), user),
+        (request_id, net_assets),
+    );
+}
+
+/// Emitted by `transfer_admin`.
+pub fn emit_admin_transferred(e: &Env, old_admin: Address, new_admin: Address) {
+    e.events().publish(
+        (symbol_short!("adm_xfr"),),
+        (old_admin, new_admin),
+    );
+}
+
+/// Emitted by `set_early_redemption_fee`.
+pub fn emit_early_redemption_fee_set(e: &Env, fee_bps: u32) {
+    e.events().publish(
+        (symbol_short!("fee_set"),),
+        fee_bps,
+    );
+}
+
+/// Emitted by `set_funding_target`.
+pub fn emit_funding_target_set(e: &Env, target: i128) {
+    e.events().publish(
+        (symbol_short!("fund_set"),),
+        target,
+    );
+}

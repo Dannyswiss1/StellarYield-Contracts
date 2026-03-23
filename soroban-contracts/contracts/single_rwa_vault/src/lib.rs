@@ -6,6 +6,9 @@ mod token_interface;
 mod events;
 mod errors;
 
+#[cfg(test)]
+mod test_token;
+
 pub use crate::types::*;
 
 use soroban_sdk::{
@@ -168,6 +171,7 @@ impl SingleRWAVault {
         transfer_asset_to_vault(e, &caller, assets);
         _mint(e, &receiver, shares);
 
+        emit_deposit(e, caller, receiver, assets, shares);
         bump_instance(e);
         shares
     }
@@ -198,6 +202,7 @@ impl SingleRWAVault {
         transfer_asset_to_vault(e, &caller, assets);
         _mint(e, &receiver, shares);
 
+        emit_deposit(e, caller, receiver, assets, shares);
         bump_instance(e);
         assets
     }
@@ -221,6 +226,7 @@ impl SingleRWAVault {
         _burn(e, &owner, shares);
         transfer_asset_from_vault(e, &receiver, assets);
 
+        emit_withdraw(e, caller, receiver, owner, assets, shares);
         bump_instance(e);
         shares
     }
@@ -243,6 +249,7 @@ impl SingleRWAVault {
         _burn(e, &owner, shares);
         transfer_asset_from_vault(e, &receiver, assets);
 
+        emit_withdraw(e, caller, receiver, owner, assets, shares);
         bump_instance(e);
         assets
     }
@@ -496,6 +503,7 @@ impl SingleRWAVault {
         }
         transfer_asset_from_vault(e, &receiver, total_out);
 
+        emit_redeem_at_maturity(e, owner, receiver, shares, assets, pending);
         bump_instance(e);
         total_out
     }
@@ -514,6 +522,7 @@ impl SingleRWAVault {
 
         let id = get_redemption_counter(e) + 1;
         put_redemption_counter(e, id);
+        let user = caller.clone();
         put_redemption_request(e, id, RedemptionRequest {
             user: caller,
             shares,
@@ -521,6 +530,7 @@ impl SingleRWAVault {
             processed: false,
         });
 
+        emit_early_redemption_requested(e, user, id, shares);
         bump_instance(e);
         id
     }
@@ -548,6 +558,7 @@ impl SingleRWAVault {
         transfer_asset_from_vault(e, &req.user, net_assets);
         // Fee stays in vault for other depositors
 
+        emit_early_redemption_processed(e, req.user, request_id, net_assets);
         bump_instance(e);
     }
 
@@ -559,6 +570,7 @@ impl SingleRWAVault {
             panic!("fee too high");
         }
         put_early_redemption_fee_bps(e, fee_bps);
+        emit_early_redemption_fee_set(e, fee_bps);
         bump_instance(e);
     }
 
@@ -583,7 +595,9 @@ impl SingleRWAVault {
     pub fn transfer_admin(e: &Env, caller: Address, new_admin: Address) {
         caller.require_auth();
         require_admin(e, &caller);
-        put_admin(e, new_admin);
+        let old_admin = get_admin(e);
+        put_admin(e, new_admin.clone());
+        emit_admin_transferred(e, old_admin, new_admin);
         bump_instance(e);
     }
 
@@ -642,6 +656,7 @@ impl SingleRWAVault {
         caller.require_auth();
         require_operator(e, &caller);
         put_funding_target(e, target);
+        emit_funding_target_set(e, target);
         bump_instance(e);
     }
 

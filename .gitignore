@@ -19,7 +19,7 @@ Contracts/out/
 Contracts/cache/
 Contracts/broadcast/
 Contracts/artifacts/
-
+test_snapshots/
 # ─────────────────────────────────────────────────────────────────
 # Node / npm / yarn / pnpm
 # ─────────────────────────────────────────────────────────────────
