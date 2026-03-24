@@ -494,7 +494,7 @@ impl SingleRWAVault {
         // --- Checks ---
         acquire_lock(e);
         require_not_paused(e);
-        require_not_closed(e);
+        require_active_or_matured(e);
         require_not_blacklisted(e, &caller);
 
         let amount = Self::pending_yield(e, caller.clone());
@@ -531,7 +531,7 @@ impl SingleRWAVault {
         // --- Checks ---
         acquire_lock(e);
         require_not_paused(e);
-        require_not_closed(e);
+        require_active_or_matured(e);
         require_not_blacklisted(e, &caller);
 
         if get_has_claimed_epoch(e, &caller, epoch) {

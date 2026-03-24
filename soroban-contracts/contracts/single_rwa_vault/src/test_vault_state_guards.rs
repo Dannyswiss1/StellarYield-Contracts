@@ -260,3 +260,68 @@ fn test_redeem_during_matured_succeeds() {
     assert!(user_balance_after > user_balance_before);
     assert_eq!(vault.balance(&user), 0);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// claim_yield — state guard tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// claim_yield during Funding state must panic with Error::InvalidVaultState.
+#[test]
+#[should_panic]
+fn test_claim_yield_during_funding_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, _admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    // Deposit during Funding so user has shares.
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    // Vault is still in Funding -- must panic.
+    vault.claim_yield(&user);
+}
+
+/// claim_yield during Active state succeeds (when yield has been distributed).
+#[test]
+fn test_claim_yield_during_active_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    let token = MockTokenClient::new(&env, &token_id);
+
+    // Distribute yield so there is something to claim.
+    token.mint(&admin, &500_000);
+    vault.distribute_yield(&admin, &500_000);
+
+    let pending = vault.pending_yield(&user);
+    assert!(pending > 0);
+
+    let claimed = vault.claim_yield(&user);
+    assert_eq!(claimed, pending);
+}
+
+/// claim_yield_for_epoch during Funding state must panic.
+#[test]
+#[should_panic]
+fn test_claim_yield_for_epoch_during_funding_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, _admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    // Vault is still in Funding -- must panic.
+    vault.claim_yield_for_epoch(&user, &1);
+}
