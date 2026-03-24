@@ -493,3 +493,24 @@ fn test_redeem_at_maturity_wrong_state_panics() {
     // Must panic — vault is Active, not Matured
     vault.redeem_at_maturity(&user, &shares, &user, &user);
 }
+
+/// redeem_at_maturity with zero shares must panic with Error::ZeroAmount.
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_redeem_at_maturity_zero_shares_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    let deposit_amount = 1_000_000i128;
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user, deposit_amount);
+
+    activate(&env, &vault_id, &admin);
+    mature(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    // Must panic — zero shares
+    vault.redeem_at_maturity(&user, &0i128, &user, &user);
+}

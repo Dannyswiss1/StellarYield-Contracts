@@ -278,3 +278,35 @@ fn test_withdraw_at_non_unit_share_price() {
     assert_eq!(v.balance(&ctx.user), 30_000_000, "30 shares remain");
     assert_eq!(ctx.asset().balance(&ctx.user), 20_000_000, "received 20 USDC");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. Error: withdraw zero assets must panic with ZeroAmount
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_withdraw_zero_assets_panics() {
+    let ctx = setup_with_kyc_bypass();
+
+    deposit(&ctx, &ctx.user.clone(), 10_000_000);
+    activate(&ctx);
+
+    // Must panic — zero assets
+    ctx.vault().withdraw(&ctx.user, &0i128, &ctx.user, &ctx.user);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. Error: redeem zero shares must panic with ZeroAmount
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_redeem_zero_shares_panics() {
+    let ctx = setup_with_kyc_bypass();
+
+    deposit(&ctx, &ctx.user.clone(), 10_000_000);
+    activate(&ctx);
+
+    // Must panic — zero shares
+    ctx.vault().redeem(&ctx.user, &0i128, &ctx.user, &ctx.user);
+}

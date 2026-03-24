@@ -289,6 +289,10 @@ impl SingleRWAVault {
         require_not_blacklisted(e, &receiver);
         require_active_or_matured(e);
 
+        if assets <= 0 {
+            panic_with_error!(e, Error::ZeroAmount);
+        }
+
         let shares = preview_withdraw(e, assets);
 
         if caller != owner {
@@ -334,6 +338,10 @@ impl SingleRWAVault {
         require_not_blacklisted(e, &owner);
         require_not_blacklisted(e, &receiver);
         require_active_or_matured(e);
+
+        if shares <= 0 {
+            panic_with_error!(e, Error::ZeroAmount);
+        }
 
         if caller != owner {
             let allowance = get_share_allowance(e, &owner, &caller);
@@ -797,6 +805,10 @@ impl SingleRWAVault {
         require_not_blacklisted(e, &owner);
         require_not_blacklisted(e, &receiver);
         require_state(e, VaultState::Matured);
+
+        if shares <= 0 {
+            panic_with_error!(e, Error::ZeroAmount);
+        }
 
         if caller != owner {
             let allowance = get_share_allowance(e, &owner, &caller);
