@@ -77,9 +77,7 @@ pub fn get_operator(e: &Env, addr: &Address) -> bool {
         .unwrap_or(false)
 }
 pub fn put_operator(e: &Env, addr: Address, val: bool) {
-    e.storage()
-        .instance()
-        .set(&DataKey::Operator(addr), &val);
+    e.storage().instance().set(&DataKey::Operator(addr), &val);
 }
 
 pub fn get_default_asset(e: &Env) -> Address {
@@ -114,19 +112,14 @@ pub fn put_default_cooperator(e: &Env, val: Address) {
 }
 
 pub fn get_vault_wasm_hash(e: &Env) -> BytesN<32> {
-    e.storage()
-        .instance()
-        .get(&DataKey::VaultWasmHash)
-        .unwrap()
+    e.storage().instance().get(&DataKey::VaultWasmHash).unwrap()
 }
 pub fn put_vault_wasm_hash(e: &Env, val: BytesN<32>) {
     e.storage().instance().set(&DataKey::VaultWasmHash, &val);
 }
 
 pub fn get_aggregator_vault(e: &Env) -> Option<Address> {
-    e.storage()
-        .instance()
-        .get(&DataKey::AggregatorVault)
+    e.storage().instance().get(&DataKey::AggregatorVault)
 }
 #[allow(dead_code)]
 pub fn put_aggregator_vault(e: &Env, val: Address) {
@@ -193,7 +186,9 @@ pub fn get_active_vaults(e: &Env) -> Vec<Address> {
 pub fn push_active_vaults(e: &Env, addr: Address) {
     let mut vaults = get_active_vaults(e);
     vaults.push_back(addr);
-    e.storage().persistent().set(&DataKey::ActiveVaults, &vaults);
+    e.storage()
+        .persistent()
+        .set(&DataKey::ActiveVaults, &vaults);
     bump_persist(e, &DataKey::ActiveVaults);
 }
 
@@ -206,7 +201,9 @@ pub fn remove_from_active_vaults(e: &Env, vault: &Address) {
             updated.push_back(addr);
         }
     }
-    e.storage().persistent().set(&DataKey::ActiveVaults, &updated);
+    e.storage()
+        .persistent()
+        .set(&DataKey::ActiveVaults, &updated);
     bump_persist(e, &DataKey::ActiveVaults);
 }
 
