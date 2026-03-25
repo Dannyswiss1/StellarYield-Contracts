@@ -15,6 +15,7 @@ pub enum VaultType {
 #[derive(Clone, Debug)]
 pub struct VaultInfo {
     pub vault: Address,
+    pub asset: Address,
     pub vault_type: VaultType,
     pub name: String,
     pub symbol: String,

@@ -36,6 +36,8 @@ pub enum DataKey {
     ActiveVaults,
     VaultInfo(Address),
     VaultCount,
+    VaultDeployCounter,
+    VaultsByAsset(Address),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,9 +79,15 @@ pub fn get_operator(e: &Env, addr: &Address) -> bool {
         .unwrap_or(false)
 }
 pub fn put_operator(e: &Env, addr: Address, val: bool) {
-    e.storage()
-        .instance()
-        .set(&DataKey::Operator(addr), &val);
+    if val {
+        e.storage()
+            .instance()
+            .set(&DataKey::Operator(addr), &val);
+    } else {
+        e.storage()
+            .instance()
+            .remove(&DataKey::Operator(addr));
+    }
 }
 
 pub fn get_default_asset(e: &Env) -> Address {
@@ -146,6 +154,21 @@ pub fn get_vault_count(e: &Env) -> u32 {
 
 fn put_vault_count(e: &Env, val: u32) {
     e.storage().instance().set(&DataKey::VaultCount, &val);
+}
+
+pub fn get_vault_deploy_counter(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get(&DataKey::VaultDeployCounter)
+        .unwrap_or(0)
+}
+
+pub fn increment_vault_deploy_counter(e: &Env) -> u32 {
+    let count = get_vault_deploy_counter(e) + 1;
+    e.storage()
+        .instance()
+        .set(&DataKey::VaultDeployCounter, &count);
+    count
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,4 +288,35 @@ pub fn delete_vault_info(e: &Env, vault: &Address) {
     e.storage()
         .persistent()
         .remove(&DataKey::VaultInfo(vault.clone()));
+}
+
+pub fn get_vaults_by_asset(e: &Env, asset: &Address) -> Vec<Address> {
+    e.storage()
+        .persistent()
+        .get(&DataKey::VaultsByAsset(asset.clone()))
+        .unwrap_or_else(|| vec![e])
+}
+
+pub fn push_vaults_by_asset(e: &Env, asset: &Address, vault: Address) {
+    let mut vaults = get_vaults_by_asset(e, asset);
+    vaults.push_back(vault);
+    e.storage()
+        .persistent()
+        .set(&DataKey::VaultsByAsset(asset.clone()), &vaults);
+    bump_persist(e, &DataKey::VaultsByAsset(asset.clone()));
+}
+
+pub fn remove_from_vaults_by_asset(e: &Env, asset: &Address, vault: &Address) {
+    let vaults = get_vaults_by_asset(e, asset);
+    let mut updated: Vec<Address> = Vec::new(e);
+    for i in 0..vaults.len() {
+        let addr = vaults.get(i).unwrap();
+        if addr != *vault {
+            updated.push_back(addr);
+        }
+    }
+    e.storage()
+        .persistent()
+        .set(&DataKey::VaultsByAsset(asset.clone()), &updated);
+    bump_persist(e, &DataKey::VaultsByAsset(asset.clone()));
 }

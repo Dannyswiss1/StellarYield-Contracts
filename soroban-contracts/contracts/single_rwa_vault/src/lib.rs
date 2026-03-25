@@ -1075,9 +1075,14 @@ impl SingleRWAVault {
         bump_instance(e);
     }
 
+    /// Re-enable vault operations.
+    ///
+    /// Requires admin authorization. While operators can pause the vault for
+    /// rapid incident response, unpausing requires higher authority to ensure
+    /// the security incident has been fully resolved.
     pub fn unpause(e: &Env, caller: Address) {
         caller.require_auth();
-        require_operator(e, &caller);
+        require_admin(e, &caller);
         put_paused(e, false);
         emit_emergency_action(e, false, String::from_str(e, ""));
         bump_instance(e);

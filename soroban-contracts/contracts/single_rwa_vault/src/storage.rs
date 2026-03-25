@@ -285,7 +285,11 @@ pub fn get_operator(e: &Env, addr: &Address) -> bool {
 }
 
 pub fn put_operator(e: &Env, addr: Address, val: bool) {
-    e.storage().instance().set(&DataKey::Operator(addr), &val);
+    if val {
+        e.storage().instance().set(&DataKey::Operator(addr), &val);
+    } else {
+        e.storage().instance().remove(&DataKey::Operator(addr));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

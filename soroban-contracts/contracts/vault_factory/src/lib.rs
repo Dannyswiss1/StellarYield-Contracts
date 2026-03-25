@@ -217,6 +217,9 @@ impl VaultFactory {
             remove_from_single_rwa_vaults(e, &vault);
         }
 
+        // Registry cleanup: remove from asset-specific list
+        remove_from_vaults_by_asset(e, &info.asset, &vault);
+
         // Delete persistent VaultInfo entry
         delete_vault_info(e, &vault);
 
@@ -282,6 +285,11 @@ impl VaultFactory {
     /// Returns all vaults whose `active` flag is set.
     pub fn get_active_vaults(e: &Env) -> Vec<Address> {
         get_active_vaults(e)
+    }
+
+    /// Returns all vaults registered for a specific underlying asset.
+    pub fn get_vaults_by_asset(e: &Env, asset: Address) -> Vec<Address> {
+        get_vaults_by_asset(e, &asset)
     }
 
     /// Returns a page of vault addresses from the full registry.
@@ -431,10 +439,15 @@ impl VaultFactory {
         let coop = get_default_cooperator(e);
 
         // Deploy a fresh vault contract instance.
-        // The salt combines the current vault count so every vault has a
-        // unique address.
-        let count = get_all_vaults(e).len();
-        let salt = e.crypto().sha256(&soroban_sdk::Bytes::from_slice(e, &count.to_be_bytes()));
+        // The salt combines a monotonic counter, the vault name, and the
+        // current timestamp to ensure every vault has a unique address and
+        // to prevent collisions even if the registry count decreases.
+        let counter = increment_vault_deploy_counter(e);
+        let mut salt_bytes = soroban_sdk::Bytes::new(e);
+        salt_bytes.append(&soroban_sdk::Bytes::from_slice(e, &counter.to_be_bytes()));
+        salt_bytes.append(&name.clone().to_xdr(e));
+        salt_bytes.append(&soroban_sdk::Bytes::from_slice(e, &e.ledger().timestamp().to_be_bytes()));
+        let salt = e.crypto().sha256(&salt_bytes);
 
         // Build the InitParams struct for the vault constructor.
         // Using a struct keeps us under Soroban's 10-arg limit per function.
@@ -467,6 +480,7 @@ impl VaultFactory {
         // Register the vault
         let info = VaultInfo {
             vault: vault_addr.clone(),
+            asset: vault_asset.clone(),
             vault_type: VaultType::SingleRwa,
             name: name.clone(),
             symbol: symbol.clone(),
@@ -477,6 +491,7 @@ impl VaultFactory {
         push_all_vaults(e, vault_addr.clone());
         push_single_rwa_vaults(e, vault_addr.clone());
         push_active_vaults(e, vault_addr.clone()); // new vaults start active
+        push_vaults_by_asset(e, &vault_asset, vault_addr.clone());
 
         emit_vault_created(e, vault_addr.clone(), VaultType::SingleRwa, name, e.current_contract_address());
 
