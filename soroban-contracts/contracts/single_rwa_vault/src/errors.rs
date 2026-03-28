@@ -70,4 +70,8 @@ pub enum Error {
     AlreadyApproved = 39,
     /// Threshold must be >= 1 and <= number of signers.
     InvalidThreshold = 40,
+    /// Preview operation would result in zero shares (dust guard).
+    PreviewZeroShares = 41,
+    /// Preview operation would result in zero assets (dust guard).
+    PreviewZeroAssets = 42,
 }
