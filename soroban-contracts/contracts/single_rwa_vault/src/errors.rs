@@ -70,4 +70,10 @@ pub enum Error {
     AlreadyApproved = 39,
     /// Threshold must be >= 1 and <= number of signers.
     InvalidThreshold = 40,
+    /// Vault total assets exceeds the funding target during the funding phase.
+    FundingTargetExceeded = 41,
+    /// Amount corresponds to zero shares during preview.
+    PreviewZeroShares = 42,
+    /// Shares correspond to zero assets during preview.
+    PreviewZeroAssets = 43,
 }

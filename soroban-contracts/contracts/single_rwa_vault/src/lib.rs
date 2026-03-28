@@ -331,6 +331,16 @@ impl SingleRWAVault {
             }
         }
 
+        if get_vault_state(e) == VaultState::Funding {
+            let target = get_funding_target(e);
+            if target > 0 {
+                let current = total_assets(e);
+                if current + assets > target {
+                    panic_with_error!(e, Error::FundingTargetExceeded);
+                }
+            }
+        }
+
         // Shares = assets (1:1 at start; yield accrual changes the price)
         let shares = preview_deposit(e, assets);
 
@@ -374,6 +384,16 @@ impl SingleRWAVault {
             let already = get_user_deposited(e, &receiver);
             if already + assets > max_dep {
                 panic_with_error!(e, Error::ExceedsMaximumDeposit);
+            }
+        }
+
+        if get_vault_state(e) == VaultState::Funding {
+            let target = get_funding_target(e);
+            if target > 0 {
+                let current = total_assets(e);
+                if current + assets > target {
+                    panic_with_error!(e, Error::FundingTargetExceeded);
+                }
             }
         }
 
@@ -440,6 +460,9 @@ impl SingleRWAVault {
         _burn(e, &owner, shares);
         put_total_deposited(e, get_total_deposited(e) - assets);
 
+        let user_dep = get_user_deposited(e, &owner);
+        put_user_deposited(e, &owner, (user_dep - assets).max(0));
+
         // --- Interaction ---
         transfer_asset_from_vault(e, &receiver, assets);
 
@@ -490,6 +513,9 @@ impl SingleRWAVault {
         let assets = preview_redeem(e, shares);
         _burn(e, &owner, shares);
         put_total_deposited(e, get_total_deposited(e) - assets);
+
+        let user_dep = get_user_deposited(e, &owner);
+        put_user_deposited(e, &owner, (user_dep - assets).max(0));
 
         // --- Interaction ---
         transfer_asset_from_vault(e, &receiver, assets);
@@ -570,11 +596,23 @@ impl SingleRWAVault {
             return 0;
         }
         let cap = get_max_deposit_per_user(e);
-        if cap == 0 {
-            return i128::MAX;
+        let mut max_allowed = if cap == 0 {
+            i128::MAX
+        } else {
+            let already = get_user_deposited(e, &receiver);
+            (cap - already).max(0)
+        };
+
+        if state == VaultState::Funding {
+            let target = get_funding_target(e);
+            if target > 0 {
+                let current = total_assets(e);
+                let remaining = (target - current).max(0);
+                max_allowed = max_allowed.min(remaining);
+            }
         }
-        let already = get_user_deposited(e, &receiver);
-        (cap - already).max(0)
+
+        max_allowed
     }
 
     /// Maximum shares `receiver` can obtain via `mint` right now.
@@ -1206,6 +1244,9 @@ impl SingleRWAVault {
         _burn(e, &owner, shares);
         put_total_deposited(e, get_total_deposited(e) - assets);
 
+        let user_dep = get_user_deposited(e, &owner);
+        put_user_deposited(e, &owner, (user_dep - assets).max(0));
+
         let mut total_out = assets;
         if pending > 0 {
             total_out += pending;
@@ -1308,6 +1349,9 @@ impl SingleRWAVault {
         put_escrowed_shares(e, &req.user, escrowed - req.shares);
         put_total_supply(e, get_total_supply(e) - req.shares);
         put_total_deposited(e, get_total_deposited(e) - net_assets);
+
+        let user_dep = get_user_deposited(e, &req.user);
+        put_user_deposited(e, &req.user, (user_dep - net_assets).max(0));
 
         // --- Interaction ---
         transfer_asset_from_vault(e, &req.user, net_assets);
