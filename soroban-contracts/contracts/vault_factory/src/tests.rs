@@ -672,12 +672,22 @@ fn test_mixed_vault_types_registry_filtering() {
     // ── get_all_vaults returns both types ─────────────────────────────────────
     let all = client.get_all_vaults();
     assert_eq!(all.len(), 2, "get_all_vaults must return both vault types");
-    assert!(all.contains(single_rwa_vault.clone()), "all vaults must include SingleRwa vault");
-    assert!(all.contains(aggregator_vault.clone()), "all vaults must include Aggregator vault");
+    assert!(
+        all.contains(single_rwa_vault.clone()),
+        "all vaults must include SingleRwa vault"
+    );
+    assert!(
+        all.contains(aggregator_vault.clone()),
+        "all vaults must include Aggregator vault"
+    );
 
     // ── get_active_vaults returns both active entries ─────────────────────────
     let active = client.get_active_vaults();
-    assert_eq!(active.len(), 2, "get_active_vaults must return all active vaults");
+    assert_eq!(
+        active.len(),
+        2,
+        "get_active_vaults must return all active vaults"
+    );
 
     // ── SingleRwa-specific list must not include the Aggregator vault ─────────
     e.as_contract(&factory_id, || {
@@ -702,4 +712,36 @@ fn test_mixed_vault_types_registry_filtering() {
         .get_vault_info(&aggregator_vault)
         .expect("Aggregator VaultInfo must exist");
     assert_eq!(agg_info.vault_type, crate::types::VaultType::Aggregator);
+}
+
+// ─── Vault Ordering ───────────────────────────────────────────────────────────
+
+/// get_all_vaults returns vaults in the order they were created.
+#[test]
+fn test_get_all_vaults_returns_vaults_in_creation_order() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_factory(&e);
+    let factory_id = client.address.clone();
+
+    // Inject vaults in a known order
+    let v1 = inject_vault(&e, &factory_id, true);
+    let v2 = inject_vault(&e, &factory_id, true);
+    let v3 = inject_vault(&e, &factory_id, true);
+    let v4 = inject_vault(&e, &factory_id, true);
+
+    // Get all vaults
+    let all_vaults = client.get_all_vaults();
+
+    // Verify count
+    assert_eq!(all_vaults.len(), 4);
+
+    // Verify order matches creation order
+    assert_eq!(all_vaults.get(0).unwrap(), v1);
+    assert_eq!(all_vaults.get(1).unwrap(), v2);
+    assert_eq!(all_vaults.get(2).unwrap(), v3);
+    assert_eq!(all_vaults.get(3).unwrap(), v4);
+
+    // Verify vault count matches
+    assert_eq!(client.get_vault_count(), 4);
 }

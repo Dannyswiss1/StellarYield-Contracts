@@ -1,6 +1,6 @@
 //! Shared types used across the SingleRWA_Vault contract.
 
-use soroban_sdk::{contracttype, Address, Env, String, Val, IntoVal, TryFromVal, Bytes};
+use soroban_sdk::{contracttype, Address, Bytes, Env, IntoVal, String, TryFromVal, Val};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Initialisation parameters struct

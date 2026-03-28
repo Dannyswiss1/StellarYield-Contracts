@@ -33,9 +33,9 @@ mod test_deposit_limits;
 #[cfg(test)]
 mod test_epoch_history;
 #[cfg(test)]
-mod test_events;
-#[cfg(test)]
 mod test_escrow;
+#[cfg(test)]
+mod test_events;
 #[cfg(test)]
 mod test_freeze_flags;
 #[cfg(test)]
