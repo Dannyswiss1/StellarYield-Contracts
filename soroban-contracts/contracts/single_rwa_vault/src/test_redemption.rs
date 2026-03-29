@@ -879,3 +879,144 @@ fn test_multiple_consecutive_yield_distributions_interleaved_claims() {
         "underlying accounting accumulates deposits plus all epoch yield"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression test: Double-claim prevention for claim_yield_for_epoch
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Attempting to claim yield for the same epoch twice must fail.
+/// The second claim should panic with Error::NoYieldToClaim (#9).
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_claim_yield_for_epoch_twice_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    let deposit_amount = 1_000_000i128;
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user, deposit_amount);
+
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+
+    // Distribute yield to create epoch 1
+    let yield_amount = 50_000i128;
+    distribute_yield(&env, &vault_id, &token_id, &admin, yield_amount);
+
+    // First claim for epoch 1 succeeds
+    let claimed = vault.claim_yield_for_epoch(&user, &1u32);
+    assert!(claimed > 0, "first claim should succeed and return positive amount");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression test: Zero-share users cannot claim yield
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Users who never deposited (zero shares) cannot claim any yield.
+/// claim_yield should return 0 and not panic.
+#[test]
+fn test_claim_yield_with_zero_shares_returns_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user_with_zero_shares = Address::generate(&env);
+
+    // Set up vault and distribute some yield (but don't let zero-share user deposit)
+    let deposit_amount = 1_000_000i128;
+    let other_user = Address::generate(&env);
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &other_user, deposit_amount);
+
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+
+    // Distribute yield to create epochs
+    let yield_amount = 50_000i128;
+    distribute_yield(&env, &vault_id, &token_id, &admin, yield_amount);
+
+    // Verify zero-share user has no shares
+    assert_eq!(vault.balance(&user_with_zero_shares), 0, "user has zero shares");
+
+    // Attempt to claim yield - should return 0, not panic
+    let claimed = vault.claim_yield(&user_with_zero_shares);
+    assert_eq!(claimed, 0, "claim_yield should return 0 for users with zero shares");
+
+    // Verify no yield is pending either
+    let pending = vault.pending_yield(&user_with_zero_shares);
+    assert_eq!(pending, 0, "pending_yield should be 0 for users with zero shares");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression test: Multiple users claiming yield for the same epoch
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Multiple users claiming yield from the same epoch should have their claims
+/// sum up to the total distributed yield, accounting for rounding.
+#[test]
+fn test_multiple_users_claim_same_epoch_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let user3 = Address::generate(&env);
+
+    // Set up three users with different share amounts
+    let deposit1 = 2_000_000i128; // 2 shares
+    let deposit2 = 3_000_000i128; // 3 shares
+    let deposit3 = 5_000_000i128; // 5 shares
+    let total_deposits = deposit1 + deposit2 + deposit3; // 10 shares total
+
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user1, deposit1);
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user2, deposit2);
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &user3, deposit3);
+
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+
+    // Distribute yield to create epoch 1
+    let yield_amount = 1_000_000i128; // 1 USDC yield
+    distribute_yield(&env, &vault_id, &token_id, &admin, yield_amount);
+
+    // Each user should get yield proportional to their shares
+    // User1: 2/10 * 1_000_000 = 200_000
+    // User2: 3/10 * 1_000_000 = 300_000
+    // User3: 5/10 * 1_000_000 = 500_000
+    let expected_user1 = 200_000i128;
+    let expected_user2 = 300_000i128;
+    let expected_user3 = 500_000i128;
+
+    // Verify individual pending yields before claiming
+    assert_eq!(vault.pending_yield_for_epoch(&user1, &1u32), expected_user1);
+    assert_eq!(vault.pending_yield_for_epoch(&user2, &1u32), expected_user2);
+    assert_eq!(vault.pending_yield_for_epoch(&user3, &1u32), expected_user3);
+
+    // Users claim yield for epoch 1 in different order
+    let claimed1 = vault.claim_yield_for_epoch(&user1, &1u32);
+    let claimed2 = vault.claim_yield_for_epoch(&user2, &1u32);
+    let claimed3 = vault.claim_yield_for_epoch(&user3, &1u32);
+
+    // Verify each claim matches expected amount
+    assert_eq!(claimed1, expected_user1, "user1 claim matches expected");
+    assert_eq!(claimed2, expected_user2, "user2 claim matches expected");
+    assert_eq!(claimed3, expected_user3, "user3 claim matches expected");
+
+    // Total claimed should equal distributed yield
+    let total_claimed = claimed1 + claimed2 + claimed3;
+    assert_eq!(total_claimed, yield_amount, "total claimed equals distributed yield");
+
+    // After claiming, all users should have zero pending yield for epoch 1
+    assert_eq!(vault.pending_yield_for_epoch(&user1, &1u32), 0);
+    assert_eq!(vault.pending_yield_for_epoch(&user2, &1u32), 0);
+    assert_eq!(vault.pending_yield_for_epoch(&user3, &1u32), 0);
+
+    // Verify epoch is marked as claimed for all users
+    assert_eq!(vault.last_claimed_epoch(&user1), 1);
+    assert_eq!(vault.last_claimed_epoch(&user2), 1);
+    assert_eq!(vault.last_claimed_epoch(&user3), 1);
+}
