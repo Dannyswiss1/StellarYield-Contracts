@@ -65,6 +65,8 @@ mod test_withdraw;
 #[cfg(test)]
 mod test_yield_vesting;
 #[cfg(test)]
+mod test_multiple_deposit_times;
+#[cfg(test)]
 mod tests;
 
 pub use crate::storage::Key;
