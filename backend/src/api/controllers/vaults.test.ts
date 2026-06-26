@@ -1,10 +1,17 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
-vi.mock("../../services/vault.js");
+const mocks = vi.hoisted(() => ({
+  listVaults: vi.fn(),
+}));
+
+vi.mock("../../services/vault.js", () => ({
+  VaultService: vi.fn(() => ({
+    listVaults: mocks.listVaults,
+  })),
+}));
 vi.mock("../../services/stellar.js");
 
 import { listVaults } from "./vaults.js";
-import { VaultService } from "../../services/vault.js";
 
 describe("Vaults Controller", () => {
   const mockRes = {
@@ -32,16 +39,12 @@ describe("Vaults Controller", () => {
         },
       ];
 
-      (VaultService as any).mockImplementation(() => ({
-        listVaults: vi
-          .fn()
-          .mockResolvedValue({
-            data: mockVaults,
-            total: 1,
-            page: 1,
-            pageSize: 20,
-          }),
-      }));
+      mocks.listVaults.mockResolvedValue({
+        data: mockVaults,
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
 
       const mockReq = {
         query: {
@@ -64,16 +67,12 @@ describe("Vaults Controller", () => {
     });
 
     it("returns empty list when no cancelled vaults exist", async () => {
-      (VaultService as any).mockImplementation(() => ({
-        listVaults: vi
-          .fn()
-          .mockResolvedValue({
-            data: [],
-            total: 0,
-            page: 1,
-            pageSize: 20,
-          }),
-      }));
+      mocks.listVaults.mockResolvedValue({
+        data: [],
+        total: 0,
+        page: 1,
+        pageSize: 20,
+      });
 
       const mockReq = {
         query: {
@@ -117,16 +116,12 @@ describe("Vaults Controller", () => {
         },
       ];
 
-      (VaultService as any).mockImplementation(() => ({
-        listVaults: vi
-          .fn()
-          .mockResolvedValue({
-            data: mockVaults,
-            total: 2,
-            page: 1,
-            pageSize: 20,
-          }),
-      }));
+      mocks.listVaults.mockResolvedValue({
+        data: mockVaults,
+        total: 2,
+        page: 1,
+        pageSize: 20,
+      });
 
       const mockReq = {
         query: {
@@ -151,16 +146,12 @@ describe("Vaults Controller", () => {
     });
 
     it("passes state to VaultService.listVaults correctly", async () => {
-      const mockListVaults = vi.fn().mockResolvedValue({
+      mocks.listVaults.mockResolvedValue({
         data: [],
         total: 0,
         page: 1,
         pageSize: 20,
       });
-
-      (VaultService as any).mockImplementation(() => ({
-        listVaults: mockListVaults,
-      }));
 
       const mockReq = {
         query: {
@@ -174,7 +165,7 @@ describe("Vaults Controller", () => {
 
       await listVaults(mockReq as any, mockRes as any, mockNext);
 
-      expect(mockListVaults).toHaveBeenCalledWith(
+      expect(mocks.listVaults).toHaveBeenCalledWith(
         expect.objectContaining({
           state: "Cancelled",
         })
@@ -189,7 +180,6 @@ describe("Vaults Controller", () => {
 
       const readmePath = path.join(
         process.cwd(),
-        "backend",
         "README.md"
       );
       const readmeContent = fs.readFileSync(readmePath, "utf-8");

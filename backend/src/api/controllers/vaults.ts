@@ -338,53 +338,86 @@ export async function getVaultTopHolders(req: Request, res: Response, next: Next
 }
 
 /**
- * GET /api/v1/vaults/:contractId/holders?search=<partial_address>
+ * GET /api/v1/vaults/:contractId/holders
  *
- * Returns holders whose address matches the search query (ILIKE).
- * Requires at least 4 characters; returns HTTP 400 otherwise.
- * Limited to 20 results.
+ * Returns active holders for a vault, paginated and sorted descending by
+ * shares by default. The total is the full active-holder count.
  */
 export async function getVaultHolders(req: Request, res: Response, next: NextFunction) {
   try {
     const contractId = String(req.params["contractId"]);
-    const search = req.query["search"];
+    const page = Number(req.query["page"] ?? 1);
+    const pageSize = Number(req.query["pageSize"] ?? 20);
+    const sort = req.query["sort"] === "deposited" ? "deposited" : "shares";
 
-    if (typeof search !== "string" || search.length < 4) {
-      res.status(400).json({
-        error: "BadRequest",
-        message: "search query parameter is required and must be at least 4 characters",
-      });
-      return;
-    }
+    const result = await vaultService.listVaultHolders(contractId, {
+      page,
+      pageSize,
+      sort,
+    });
 
-    const vaultRows = await query<{ id: number }>(
-      "SELECT id FROM vaults WHERE contract_id = $1",
-      [contractId],
-    );
-    if (vaultRows.length === 0) {
+    if (!result) {
       res.status(404).json({ error: "NotFound", message: "Vault not found" });
       return;
     }
-    const vaultId = vaultRows[0].id;
-
-    const rows = await query<{ user_address: string; shares: string; deposited: string; updated_at: Date }>(
-      `SELECT user_address, shares, deposited, updated_at
-       FROM user_vault_positions
-       WHERE vault_id = $1 AND user_address ILIKE $2
-       ORDER BY shares DESC
-       LIMIT 20`,
-      [vaultId, `%${search}%`],
-    );
-
-    const data = rows.map((row) => ({
-      userAddress: row.user_address,
-      shares: row.shares,
-      deposited: row.deposited,
-      updatedAt: row.updated_at,
-    }));
 
     setCacheHeaders(res);
-    res.json(data);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/vaults/:contractId/holders/count
+ *
+ * Returns the active shareholder count for a vault.
+ */
+export async function getVaultHolderCount(req: Request, res: Response, next: NextFunction) {
+  try {
+    const count = await vaultService.countVaultHolders(String(req.params["contractId"]));
+    if (count == null) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+
+    res.set("Cache-Control", "max-age=30");
+    res.json({ count });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/vaults/:contractId/holders/export.csv
+ *
+ * Exports active holders as CSV columns:
+ * userAddress, shares, deposited, lastUpdatedAt.
+ */
+export async function exportVaultHoldersCsv(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const holders = await vaultService.getVaultHoldersForExport(contractId);
+    if (!holders) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+
+    const columns = ["userAddress", "shares", "deposited", "lastUpdatedAt"];
+    const rows = holders.map((holder) => [
+      holder.userAddress,
+      holder.shares,
+      holder.deposited,
+      holder.lastUpdatedAt.toISOString(),
+    ]);
+    const csv = [
+      columns.map(csvEscape).join(","),
+      ...rows.map((row) => row.map(csvEscape).join(",")),
+    ].join("\r\n") + "\r\n";
+
+    res.set("Content-Type", "text/csv");
+    res.set("Content-Disposition", `attachment; filename="holders-${contractId}.csv"`);
+    res.send(csv);
   } catch (err) {
     next(err);
   }

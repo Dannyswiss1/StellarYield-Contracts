@@ -14,6 +14,14 @@ vi.mock("../logger.js", () => ({
     debug: vi.fn(),
   },
 }));
+vi.mock("./yield.js", () => ({
+  YieldService: vi.fn(() => ({
+    getUserPendingYield: vi.fn().mockResolvedValue({
+      pendingYield: "0",
+      epochs: [],
+    }),
+  })),
+}));
 
 const TEST_ADDRESS = "GBRPYHIL2CI3WHZDTOOQFC6EB4KJJGUJJBBX7UYXVXPXD5XNMJXVXV";
 
@@ -204,6 +212,55 @@ describe("UserService", () => {
 
       expect(result).toEqual({});
       expect(db.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getShareBalanceHistory", () => {
+    it("returns a user's share snapshots for a specific vault ordered by epoch", async () => {
+      const recordedAt = new Date("2025-01-01T00:00:00.000Z");
+      vi.mocked(db.query).mockResolvedValueOnce([
+        { epoch: 1, shares: "100", recorded_at: recordedAt },
+        { epoch: 2, shares: "150", recorded_at: recordedAt },
+      ]);
+
+      const result = await userService.getShareBalanceHistory(
+        TEST_ADDRESS,
+        "CDLZFC3SYJYHZDQA6M57EYUC2XBDA6LQF3M6KFRDZ7TXJYJL2K3B",
+      );
+
+      expect(result).toEqual([
+        { epoch: 1, shares: "100", recordedAt },
+        { epoch: 2, shares: "150", recordedAt },
+      ]);
+      expect(db.query).toHaveBeenCalledWith(
+        expect.stringContaining("JOIN vaults v ON sbs.vault_id = v.id"),
+        [TEST_ADDRESS, "CDLZFC3SYJYHZDQA6M57EYUC2XBDA6LQF3M6KFRDZ7TXJYJL2K3B"],
+      );
+      expect(db.query).toHaveBeenCalledWith(
+        expect.stringContaining("ORDER BY sbs.epoch ASC"),
+        [TEST_ADDRESS, "CDLZFC3SYJYHZDQA6M57EYUC2XBDA6LQF3M6KFRDZ7TXJYJL2K3B"],
+      );
+    });
+
+    it("aggregates share snapshots across all vaults when vaultId is omitted", async () => {
+      const recordedAt = new Date("2025-01-02T00:00:00.000Z");
+      vi.mocked(db.query).mockResolvedValueOnce([
+        { epoch: 1, shares: "350", recorded_at: recordedAt },
+      ]);
+
+      const result = await userService.getShareBalanceHistory(TEST_ADDRESS);
+
+      expect(result).toEqual([
+        { epoch: 1, shares: "350", recordedAt },
+      ]);
+      expect(db.query).toHaveBeenCalledWith(
+        expect.stringContaining("SUM(shares)::text AS shares"),
+        [TEST_ADDRESS],
+      );
+      expect(db.query).toHaveBeenCalledWith(
+        expect.stringContaining("GROUP BY epoch"),
+        [TEST_ADDRESS],
+      );
     });
   });
 });

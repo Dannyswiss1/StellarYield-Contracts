@@ -102,11 +102,15 @@ connects to the `postgres` service.
 - `GET /api/v1/vaults/factory/:factoryId` - list vaults for a factory.
 - `GET /api/v1/vaults/:contractId` - get a vault by contract ID.
 - `GET /api/v1/vaults/:contractId/positions` - list vault positions.
+- `GET /api/v1/vaults/:contractId/holders?page=&pageSize=&sort=` - list active vault holders, sorted by `shares` or `deposited`.
+- `GET /api/v1/vaults/:contractId/holders/count` - return the active holder count for a vault.
+- `GET /api/v1/vaults/:contractId/holders/export.csv` - export active vault holders as a protected CSV attachment.
 - `GET /api/v1/vaults/:contractId/early-redemption-fee?shares=` - preview the early redemption fee breakdown for a share amount.
 - `GET /api/v1/vaults/:contractId/export.csv` - export vault data as a CSV attachment.
 - `GET /api/v1/users/:address` - get a user by Stellar address.
 - `GET /api/v1/users/:address/kyc?vaultId=:contractId` - live-read on-chain KYC status for a vault.
 - `GET /api/v1/users/:address/portfolio` - get a user's portfolio.
+- `GET /api/v1/users/:address/share-history?vaultId=:contractId` - get epoch-ordered share balance history; omit `vaultId` to aggregate across vaults by epoch.
 - `POST /api/v1/users/portfolios/batch` - batch-fetch portfolios for up to 50 addresses (`{ addresses: string[] }`).
 - `GET /api/v1/yields/:contractId/epochs` - list vault yield epochs.
 - `GET /api/v1/yields/:contractId/pending/:userAddress` - get pending yield.

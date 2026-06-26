@@ -35,6 +35,20 @@ const paginatedVaultsSchema = z.object({
   pageSize: z.number(),
 });
 
+const vaultHolderSchema = z.object({
+  userAddress: z.string(),
+  shares: z.string(),
+  deposited: z.string(),
+  lastUpdatedAt: z.string(),
+});
+
+const paginatedVaultHoldersSchema = z.object({
+  data: z.array(vaultHolderSchema),
+  total: z.number(),
+  page: z.number(),
+  pageSize: z.number(),
+});
+
 const userSchema = z.object({
   id: z.number(),
   address: z.string(),
@@ -63,6 +77,12 @@ const epochSchema = z.object({
   yieldAmount: z.string(),
   totalShares: z.string(),
   distributedAt: z.string().nullable(),
+});
+
+const shareBalanceHistorySchema = z.object({
+  epoch: z.number(),
+  shares: z.string(),
+  recordedAt: z.string(),
 });
 
 const redemptionRequestSchema = z.object({
@@ -207,6 +227,51 @@ function registerPaths(): void {
 
   registry.registerPath({
     method: "get",
+    path: "/api/v1/vaults/{contractId}/holders",
+    summary: "List active vault holders",
+    tags: ["Vaults"],
+    parameters: [{ name: "contractId", in: "path", required: true, schema: { type: "string" } }],
+    request: {
+      query: z.object({
+        page: z.coerce.number().optional(),
+        pageSize: z.coerce.number().optional(),
+        sort: z.enum(["shares", "deposited"]).optional(),
+      }),
+    },
+    responses: {
+      200: { description: "Paginated active holder list", content: { "application/json": { schema: paginatedVaultHoldersSchema } } },
+      404: { description: "Vault not found", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/vaults/{contractId}/holders/count",
+    summary: "Get active vault holder count",
+    tags: ["Vaults"],
+    parameters: [{ name: "contractId", in: "path", required: true, schema: { type: "string" } }],
+    responses: {
+      200: { description: "Active holder count", content: { "application/json": { schema: z.object({ count: z.number() }) } } },
+      404: { description: "Vault not found", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/vaults/{contractId}/holders/export.csv",
+    summary: "Export active vault holders as CSV",
+    tags: ["Vaults"],
+    parameters: [{ name: "contractId", in: "path", required: true, schema: { type: "string" } }],
+    responses: {
+      200: { description: "CSV attachment with active holders", content: { "text/csv": { schema: z.string() } } },
+      401: { description: "Missing API key", content: { "application/json": { schema: errorResponseSchema } } },
+      403: { description: "Invalid API key", content: { "application/json": { schema: errorResponseSchema } } },
+      404: { description: "Vault not found", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
     path: "/api/v1/vaults/{contractId}/tvl-history",
     summary: "Get vault TVL history",
     tags: ["Vaults"],
@@ -236,6 +301,22 @@ function registerPaths(): void {
     parameters: [{ name: "address", in: "path", required: true, schema: { type: "string" } }],
     responses: {
       200: { description: "User portfolio", content: { "application/json": { schema: userPortfolioSchema } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/users/{address}/share-history",
+    summary: "Get user share balance history",
+    tags: ["Users"],
+    parameters: [{ name: "address", in: "path", required: true, schema: { type: "string" } }],
+    request: {
+      query: z.object({
+        vaultId: z.string().optional(),
+      }),
+    },
+    responses: {
+      200: { description: "Share balance snapshots ordered by epoch", content: { "application/json": { schema: z.array(shareBalanceHistorySchema) } } },
     },
   });
 

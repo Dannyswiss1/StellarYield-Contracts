@@ -1,4 +1,10 @@
-import type { Vault, UserVaultPosition, PaginatedResponse } from "../types/index.js";
+import type {
+  Vault,
+  UserVaultPosition,
+  PaginatedResponse,
+  VaultHolder,
+  VaultHolderSort,
+} from "../types/index.js";
 import { query } from "../db/index.js";
 import { logger } from "../logger.js";
 
@@ -191,6 +197,101 @@ export class VaultService {
       deposited: row.deposited,
       lastClaimedEpoch: row.last_claimed_epoch,
       updatedAt: row.updated_at,
+    }));
+  }
+
+  async listVaultHolders(
+    contractId: string,
+    opts: { page: number; pageSize: number; sort: VaultHolderSort },
+  ): Promise<PaginatedResponse<VaultHolder> | null> {
+    const vaultRows = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRows.length === 0) return null;
+
+    const vaultId = vaultRows[0].id;
+    const pageSize = Math.min(Math.max(opts.pageSize, 1), 100);
+    const page = Math.max(opts.page, 1);
+    const offset = (page - 1) * pageSize;
+    const sortColumn = opts.sort === "deposited" ? "deposited" : "shares";
+
+    const rows = await query<{
+      user_address: string;
+      shares: string;
+      deposited: string;
+      updated_at: Date;
+    }>(
+      `SELECT user_address, shares, deposited, updated_at
+       FROM user_vault_positions
+       WHERE vault_id = $1 AND shares > 0
+       ORDER BY ${sortColumn} DESC, user_address ASC
+       LIMIT $2 OFFSET $3`,
+      [vaultId, pageSize, offset],
+    );
+
+    const countRows = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM user_vault_positions
+       WHERE vault_id = $1 AND shares > 0`,
+      [vaultId],
+    );
+
+    return {
+      data: rows.map((row) => ({
+        userAddress: row.user_address,
+        shares: row.shares,
+        deposited: row.deposited,
+        lastUpdatedAt: row.updated_at,
+      })),
+      total: parseInt(countRows[0]?.count ?? "0", 10),
+      page,
+      pageSize,
+    };
+  }
+
+  async countVaultHolders(contractId: string): Promise<number | null> {
+    const vaultRows = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRows.length === 0) return null;
+
+    const rows = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM user_vault_positions
+       WHERE vault_id = $1 AND shares > 0`,
+      [vaultRows[0].id],
+    );
+
+    return parseInt(rows[0]?.count ?? "0", 10);
+  }
+
+  async getVaultHoldersForExport(contractId: string): Promise<VaultHolder[] | null> {
+    const vaultRows = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRows.length === 0) return null;
+
+    const rows = await query<{
+      user_address: string;
+      shares: string;
+      deposited: string;
+      updated_at: Date;
+    }>(
+      `SELECT user_address, shares, deposited, updated_at
+       FROM user_vault_positions
+       WHERE vault_id = $1 AND shares > 0
+       ORDER BY shares DESC, user_address ASC`,
+      [vaultRows[0].id],
+    );
+
+    return rows.map((row) => ({
+      userAddress: row.user_address,
+      shares: row.shares,
+      deposited: row.deposited,
+      lastUpdatedAt: row.updated_at,
     }));
   }
 
@@ -434,4 +535,3 @@ export class VaultService {
     };
   }
 }
-

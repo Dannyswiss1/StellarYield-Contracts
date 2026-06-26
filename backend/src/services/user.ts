@@ -4,6 +4,7 @@ import type {
   UserPortfolioResponse,
   PaginatedResponse,
   YieldHistoryEntry,
+  ShareBalanceHistoryEntry,
 } from "../types/index.js";
 import { query } from "../db/index.js";
 import { YieldService } from "./yield.js";
@@ -108,6 +109,51 @@ export class UserService {
       totalPendingYield: totalPendingYield.toString(),
       totalValue,
     };
+  }
+
+  async getShareBalanceHistory(
+    address: string,
+    vaultId?: string,
+  ): Promise<ShareBalanceHistoryEntry[]> {
+    if (vaultId) {
+      const rows = await query<{
+        epoch: number;
+        shares: string;
+        recorded_at: Date;
+      }>(
+        `SELECT sbs.epoch, sbs.shares, sbs.recorded_at
+         FROM share_balance_snapshots sbs
+         JOIN vaults v ON sbs.vault_id = v.id
+         WHERE sbs.user_address = $1 AND v.contract_id = $2
+         ORDER BY sbs.epoch ASC`,
+        [address, vaultId],
+      );
+
+      return rows.map((row) => ({
+        epoch: row.epoch,
+        shares: row.shares,
+        recordedAt: row.recorded_at,
+      }));
+    }
+
+    const rows = await query<{
+      epoch: number;
+      shares: string;
+      recorded_at: Date;
+    }>(
+      `SELECT epoch, SUM(shares)::text AS shares, MAX(recorded_at) AS recorded_at
+       FROM share_balance_snapshots
+       WHERE user_address = $1
+       GROUP BY epoch
+       ORDER BY epoch ASC`,
+      [address],
+    );
+
+    return rows.map((row) => ({
+      epoch: row.epoch,
+      shares: row.shares,
+      recordedAt: row.recorded_at,
+    }));
   }
 
   /**

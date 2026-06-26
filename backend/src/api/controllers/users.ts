@@ -32,6 +32,22 @@ export async function getUserPortfolio(
   }
 }
 
+export async function getUserShareHistory(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const history = await userService.getShareBalanceHistory(
+      String(req.params["address"]),
+      typeof req.query["vaultId"] === "string" ? req.query["vaultId"] : undefined,
+    );
+    res.json(history);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getPortfoliosBatch(
   req: Request,
   res: Response,

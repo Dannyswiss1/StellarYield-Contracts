@@ -77,7 +77,7 @@ export async function backfillIndexer(req: Request, res: Response, next: NextFun
 
 export async function deleteApiKey(req: Request, res: Response, next: NextFunction) {
   try {
-    const keyId = req.params["id"];
+    const keyId = String(req.params["id"]);
     const idNum = parseInt(keyId, 10);
 
     if (isNaN(idNum) || idNum <= 0) {

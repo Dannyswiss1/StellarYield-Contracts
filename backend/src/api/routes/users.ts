@@ -5,6 +5,7 @@ import {
   getUser,
   getUserKyc,
   getUserPortfolio,
+  getUserShareHistory,
   getUserYieldHistory,
   searchUsers,
 } from "../controllers/users.js";
@@ -41,6 +42,10 @@ const yieldHistoryQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).default(20).transform((v) => Math.min(v, 50)),
 });
 
+const shareHistoryQuerySchema = z.object({
+  vaultId: z.string().length(56).regex(/^C[A-Z2-7]{55}$/).optional(),
+});
+
 usersRouter.get("/", validateQuery(searchQuerySchema), searchUsers);
 usersRouter.post(
   "/portfolios/batch",
@@ -58,6 +63,12 @@ usersRouter.get(
   validateParams(addressParamSchema),
   validateQuery(yieldHistoryQuerySchema),
   getUserYieldHistory,
+);
+usersRouter.get(
+  "/:address/share-history",
+  validateParams(addressParamSchema),
+  validateQuery(shareHistoryQuerySchema),
+  getUserShareHistory,
 );
 usersRouter.get("/:address", validateParams(addressParamSchema), getUser);
 usersRouter.get(

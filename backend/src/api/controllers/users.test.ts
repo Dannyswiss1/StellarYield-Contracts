@@ -225,4 +225,26 @@ describe("User Controller - search validation", () => {
     expect(readKycVerified).toHaveBeenCalledWith("CC_VAULT", "GABCDEF");
     expect(res.json).toHaveBeenCalledWith({ verified: true });
   });
+
+  it("getUserShareHistory controller returns share snapshots", async () => {
+    const { query } = await import("../../db/index.js");
+    const recordedAt = new Date("2025-01-01T00:00:00.000Z");
+    (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { epoch: 1, shares: "100", recorded_at: recordedAt },
+    ]);
+
+    const { getUserShareHistory } = await import("./users.js");
+    const req = {
+      params: { address: "GABCDEF" },
+      query: { vaultId: "CDLZFC3SYJYHZDQA6M57EYUC2XBDA6LQF3M6KFRDZ7TXJYJL2K3B" },
+    } as any;
+    const res = { json: vi.fn() } as any;
+    const next = vi.fn();
+
+    await getUserShareHistory(req, res, next);
+
+    expect(res.json).toHaveBeenCalledWith([
+      { epoch: 1, shares: "100", recordedAt },
+    ]);
+  });
 });

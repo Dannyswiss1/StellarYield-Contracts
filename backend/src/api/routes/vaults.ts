@@ -12,12 +12,15 @@ import {
   getVaultSnapshot,
   getVaultTopHolders,
   getVaultHolders,
+  getVaultHolderCount,
+  exportVaultHoldersCsv,
   getVaultTvlHistory,
   getEarlyRedemptionFee,
   exportVaultCsv,
   getCompoundProjection,
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
+import { requireApiKey } from "../middleware/auth.js";
 
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
 
@@ -37,6 +40,12 @@ const vaultFactoryParamsSchema = z.object({
   factoryId: contractAddressSchema,
 });
 
+const vaultHoldersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
+  sort: z.enum(["shares", "deposited"]).default("shares"),
+});
+
 export const vaultsRouter = Router();
 
 vaultsRouter.get("/", validateQuery(listVaultsQuerySchema), listVaults);
@@ -48,8 +57,22 @@ vaultsRouter.get("/:contractId/total-assets/live", validateParams(vaultParamsSch
 vaultsRouter.get("/:contractId/redemption-queue", validateParams(vaultParamsSchema), getRedemptionQueue);
 // Get top N holders leaderboard: GET /api/v1/vaults/:contractId/holders/top?n=10
 vaultsRouter.get("/:contractId/holders/top", validateParams(vaultParamsSchema), getVaultTopHolders);
-// Search holders by partial address: GET /api/v1/vaults/:contractId/holders?search=
-vaultsRouter.get("/:contractId/holders", validateParams(vaultParamsSchema), getVaultHolders);
+// Active holder count: GET /api/v1/vaults/:contractId/holders/count
+vaultsRouter.get("/:contractId/holders/count", validateParams(vaultParamsSchema), getVaultHolderCount);
+// Export active holders as CSV: GET /api/v1/vaults/:contractId/holders/export.csv
+vaultsRouter.get(
+  "/:contractId/holders/export.csv",
+  requireApiKey(),
+  validateParams(vaultParamsSchema),
+  exportVaultHoldersCsv,
+);
+// List active holders: GET /api/v1/vaults/:contractId/holders?page=&pageSize=&sort=
+vaultsRouter.get(
+  "/:contractId/holders",
+  validateParams(vaultParamsSchema),
+  validateQuery(vaultHoldersQuerySchema),
+  getVaultHolders,
+);
 // Get vault snapshot: GET /api/v1/vaults/:contractId/snapshot
 vaultsRouter.get("/:contractId/snapshot", validateParams(vaultParamsSchema), getVaultSnapshot);
 // Get vault TVL history: GET /api/v1/vaults/:contractId/tvl-history
