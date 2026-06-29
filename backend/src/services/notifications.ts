@@ -10,6 +10,9 @@ const BLOCKED_HOSTNAMES = new Set([
   "100.100.100.200",
 ]);
 
+/** Number of consecutive delivery failures that trigger auto-deactivation (#667). */
+const MAX_CONSECUTIVE_FAILURES = 10;
+
 function isPrivateIp(ip: string): boolean {
   const v4 = [
     /^127\./,
@@ -55,12 +58,13 @@ interface WebhookRow {
   url: string;
   events: string[];
   secret: string | null;
+  consecutive_failures: number;
 }
 
 export class NotificationService {
   async notify(event: string, data: Record<string, unknown>): Promise<void> {
     const webhooks = await query<WebhookRow>(
-      "SELECT id, url, events, secret FROM webhooks WHERE active = TRUE AND $1 = ANY(events)",
+      "SELECT id, url, events, secret, consecutive_failures FROM webhooks WHERE active = TRUE AND $1 = ANY(events)",
       [event],
     );
 
@@ -73,13 +77,46 @@ export class NotificationService {
     );
 
     for (let i = 0; i < webhooks.length; i++) {
+      const webhook = webhooks[i];
       const result = results[i];
-      if (result.status === "rejected" || (result.status === "fulfilled" && !result.value)) {
+      const failed =
+        result.status === "rejected" || (result.status === "fulfilled" && !result.value);
+
+      if (failed) {
+        const newFailures = (webhook.consecutive_failures ?? 0) + 1;
+        if (newFailures >= MAX_CONSECUTIVE_FAILURES) {
+          // Auto-deactivate after threshold reached (#667)
+          await query(
+            `UPDATE webhooks SET consecutive_failures = $1, active = FALSE WHERE id = $2`,
+            [newFailures, webhook.id],
+          );
+          logger.warn(
+            { webhookId: webhook.id, consecutiveFailures: newFailures },
+            "Webhook auto-deactivated after reaching consecutive failure threshold",
+          );
+        } else {
+          await query(
+            `UPDATE webhooks SET consecutive_failures = $1 WHERE id = $2`,
+            [newFailures, webhook.id],
+          );
+        }
+
         await query(
           `INSERT INTO webhook_deliveries (webhook_id, payload, attempt, next_retry_at, last_error)
            VALUES ($1, $2, 1, NOW() + INTERVAL '5 seconds', $3)`,
-          [webhooks[i].id, payload, result.status === "rejected" ? String(result.reason) : "non-2xx response"],
+          [
+            webhook.id,
+            payload,
+            result.status === "rejected"
+              ? String((result as PromiseRejectedResult).reason)
+              : "non-2xx response",
+          ],
         );
+      } else {
+        // Successful delivery — reset consecutive_failures counter
+        if ((webhook.consecutive_failures ?? 0) > 0) {
+          await query(`UPDATE webhooks SET consecutive_failures = 0 WHERE id = $1`, [webhook.id]);
+        }
       }
     }
   }
@@ -108,7 +145,7 @@ export class NotificationService {
     for (const row of dueRows) {
       try {
         const webhookRows = await query<WebhookRow>(
-          "SELECT id, url, events, secret FROM webhooks WHERE id = $1",
+          "SELECT id, url, events, secret, consecutive_failures FROM webhooks WHERE id = $1",
           [row.webhook_id],
         );
         if (webhookRows.length === 0) continue;
@@ -120,6 +157,10 @@ export class NotificationService {
             "UPDATE webhook_deliveries SET delivered_at = NOW() WHERE id = $1",
             [row.id],
           );
+          // Reset consecutive_failures on successful re-delivery
+          if ((webhook.consecutive_failures ?? 0) > 0) {
+            await query(`UPDATE webhooks SET consecutive_failures = 0 WHERE id = $1`, [webhook.id]);
+          }
         } else {
           const nextAttempt = row.attempt + 1;
           const delaySeconds = Math.min(Math.pow(2, row.attempt) * 5, 3600);
@@ -141,6 +182,56 @@ export class NotificationService {
         );
       }
     }
+  }
+
+  /**
+   * Send a test ping to a webhook endpoint (#666).
+   * Returns delivery result metadata: delivered, statusCode, durationMs.
+   */
+  async testDeliver(
+    webhook: WebhookRow,
+  ): Promise<{ delivered: boolean; statusCode: number | null; durationMs: number }> {
+    const payload = JSON.stringify({
+      event: "test",
+      timestamp: new Date().toISOString(),
+      contractId: null,
+    });
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (webhook.secret) {
+      const signature = createHmac("sha256", webhook.secret).update(payload).digest("hex");
+      headers["X-StellarYield-Signature"] = `sha256=${signature}`;
+    }
+
+    const start = Date.now();
+    try {
+      const response = await fetch(webhook.url, {
+        method: "POST",
+        headers,
+        body: payload,
+        signal: AbortSignal.timeout(5000),
+        redirect: "manual",
+      });
+      const durationMs = Date.now() - start;
+      return { delivered: response.ok, statusCode: response.status, durationMs };
+    } catch {
+      const durationMs = Date.now() - start;
+      return { delivered: false, statusCode: null, durationMs };
+    }
+  }
+
+  /**
+   * Verify an HMAC-SHA256 webhook signature (#664).
+   * Computes sha256=HMAC(payload, secret) and performs constant-time comparison.
+   */
+  verifySignature(payload: string, signature: string, secret: string): boolean {
+    const expected = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+    if (expected.length !== signature.length) return false;
+    let diff = 0;
+    for (let i = 0; i < expected.length; i++) {
+      diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+    }
+    return diff === 0;
   }
 
   /**

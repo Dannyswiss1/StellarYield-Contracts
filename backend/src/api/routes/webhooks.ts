@@ -1,6 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
-import { createWebhook, listWebhooks, deleteWebhook } from "../controllers/webhooks.js";
+import {
+  createWebhook,
+  listWebhooks,
+  deleteWebhook,
+  testWebhook,
+  verifyWebhookSignature,
+} from "../controllers/webhooks.js";
 import { requireApiKey } from "../middleware/auth.js";
 import { validateBody, validateParams } from "../middleware/validate.js";
 
@@ -32,6 +38,13 @@ const webhookParamsSchema = z.object({
   id: z.string().regex(/^\d+$/, "ID must be a positive integer"),
 });
 
+/** Schema for POST /webhooks/verify-signature (#664) */
+const verifySignatureSchema = z.object({
+  payload: z.string(),
+  signature: z.string(),
+  secret: z.string(),
+});
+
 export const webhooksRouter = Router();
 
 webhooksRouter.use(requireApiKey());
@@ -39,3 +52,13 @@ webhooksRouter.use(requireApiKey());
 webhooksRouter.post("/", validateBody(createWebhookSchema), createWebhook);
 webhooksRouter.get("/", listWebhooks);
 webhooksRouter.delete("/:id", validateParams(webhookParamsSchema), deleteWebhook);
+
+/** POST /webhooks/verify-signature — verify HMAC signature (#664) */
+webhooksRouter.post(
+  "/verify-signature",
+  validateBody(verifySignatureSchema),
+  verifyWebhookSignature,
+);
+
+/** POST /admin/webhooks/:id/test — send test ping (#666) */
+webhooksRouter.post("/:id/test", validateParams(webhookParamsSchema), testWebhook);

@@ -298,3 +298,25 @@ export async function readEarlyRedemptionFeeBps(contractId: string): Promise<num
   const value = await simulateRead<number>(contractId, "early_redemption_fee_bps");
   return Number(value ?? 0);
 }
+
+/**
+ * Read the funding deadline timestamp (unix seconds) from the contract.
+ * Returns 0n when no deadline is configured.
+ */
+export async function readFundingDeadline(contractId: string): Promise<bigint> {
+  const value = await simulateRead<bigint | number>(contractId, "funding_deadline");
+  const result = BigInt(value ?? 0n);
+  if (result < 0n) {
+    throw new Error(`readFundingDeadline: unexpected negative value ${result}`);
+  }
+  return result;
+}
+
+/**
+ * Read the vault name (share token name) from the contract.
+ * Returns a string representing the share token name.
+ */
+export async function readVaultName(contractId: string): Promise<string> {
+  const raw = await simulateRead<string | Record<string, unknown>>(contractId, "name");
+  return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+}

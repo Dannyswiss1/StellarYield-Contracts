@@ -1360,3 +1360,18 @@ fn test_list_recent_vaults_returns_newest_first() {
     assert_eq!(all_recent.get(2).unwrap(), v3);
     assert_eq!(all_recent.get(3).unwrap(), v2);
 }
+
+#[test]
+fn test_default_operator_fee_bps_returns_constructor_default() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (factory_id, _) = setup_factory(&e);
+    let client = VaultFactoryClient::new(&e, &factory_id);
+
+    assert_eq!(
+        client.default_operator_fee_bps(),
+        200u32,
+        "default_operator_fee_bps must return 200 (2%) as set in the constructor"
+    );
+}
