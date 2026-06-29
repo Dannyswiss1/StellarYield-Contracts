@@ -583,6 +583,9 @@ describe("parseUnpausedEvent", () => {
   it("returns null for malformed input", () => {
     expect(parseUnpausedEvent(null)).toBeNull();
     expect(parseUnpausedEvent({})).toBeNull();
+  });
+});
+
 // ── Issue #611: parseKycVerifiedEvent ─────────────────────────────────────────
 
 describe("parseKycVerifiedEvent", () => {

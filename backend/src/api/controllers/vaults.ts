@@ -403,26 +403,6 @@ export async function getVaultHolders(req: Request, res: Response, next: NextFun
 }
 
 /**
- * GET /api/v1/vaults/:contractId/operators
- *
- * Returns the current active operators for a vault.
- */
-export async function getVaultOperators(req: Request, res: Response, next: NextFunction) {
-  try {
-    const vault = await vaultService.getVault(String(req.params["contractId"]));
-    if (!vault) {
-      res.status(404).json({ error: "NotFound", message: "Vault not found" });
-      return;
-    }
-    const operators = await vaultService.listVaultOperators(String(req.params["contractId"]));
-    setCacheHeaders(res);
-    res.json(operators);
-  } catch (err) {
-    next(err);
-  }
-}
-
-/**
  * GET /api/v1/vaults/:contractId/roles
  *
  * Returns the current active roles for a vault.

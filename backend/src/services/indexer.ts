@@ -531,20 +531,6 @@ export class Indexer {
       return;
     }
 
-    const opAdded = parseOpAddEvent(event);
-    if (opAdded) {
-      await this.handleOperatorAdded(event.contractId ?? "", opAdded);
-      await this.recordEvent(event, "op_add");
-      return;
-    }
-
-    const opRemoved = parseOpRemEvent(event);
-    if (opRemoved) {
-      await this.handleOperatorRemoved(event.contractId ?? "", opRemoved);
-      await this.recordEvent(event, "op_rem");
-      return;
-    }
-
     const zkmeUpd = parseZkmeVerifierUpdatedEvent(event);
     if (zkmeUpd) {
       await this.handleZkmeVerifierUpdated(event.contractId ?? "", zkmeUpd);
@@ -565,6 +551,10 @@ export class Indexer {
           event.contractId ?? "",
           JSON.stringify({ user: kycSet.user, verified: kycSet.verified, timestamp: Number(kycSet.timestamp) }),
         ],
+      );
+      return;
+    }
+
     const paused = parsePausedEvent(event);
     if (paused) {
       await this.handlePauseState(event.contractId ?? "", true);
@@ -576,6 +566,9 @@ export class Indexer {
     if (unpaused) {
       await this.handlePauseState(event.contractId ?? "", false);
       await this.recordEvent(event, "unpaused");
+      return;
+    }
+
     const kycUpdate = parseKycVerifiedEvent(event);
     if (kycUpdate) {
       await this.userService.upsertUser(kycUpdate.user, kycUpdate.verified);
@@ -889,6 +882,8 @@ export class Indexer {
       [paused, contractId],
     );
     logger.info({ contractId, paused }, `Processed vault ${paused ? "paused" : "unpaused"} event`);
+  }
+
   private async handleOperatorAdded(
     contractId: string,
     event: ParsedOperatorAddedEvent,
@@ -1770,6 +1765,11 @@ export function parseYieldClaimedPartialEvent(rawEvent: unknown): ParsedYieldCla
 // ── #604: parseOpAddEvent / parseOpRemEvent ────────────────────────────────────
 
 export interface ParsedOpAddEvent {
+  caller: string;
+  operator: string;
+  timestamp: bigint;
+}
+
 // ── Issue #606: parsePausedEvent / parseUnpausedEvent ─────────────────────────
 
 export interface ParsedPausedEvent {
@@ -1792,6 +1792,11 @@ export function parsePausedEvent(rawEvent: any): ParsedPausedEvent | null {
     }
     if (eventName !== "paused" && eventName !== "v_pause") return null;
     return { contractId: String(rawEvent?.contractId ?? "") };
+  } catch {
+    return null;
+  }
+}
+
 // ── Issue #593: operator events ─────────────────────────────────────────────
 
 export interface ParsedOperatorAddedEvent {
@@ -1801,6 +1806,9 @@ export interface ParsedOperatorAddedEvent {
 }
 
 export function parseOpAddEvent(rawEvent: unknown): ParsedOpAddEvent | null {
+  return parseOperatorAddedEvent(rawEvent);
+}
+
 export function parseOperatorAddedEvent(rawEvent: unknown): ParsedOperatorAddedEvent | null {
   try {
     if (!rawEvent || typeof rawEvent !== "object") return null;
@@ -1842,6 +1850,9 @@ export interface ParsedOpRemEvent {
 }
 
 export function parseOpRemEvent(rawEvent: unknown): ParsedOpRemEvent | null {
+  return parseOperatorRemovedEvent(rawEvent);
+}
+
 export interface ParsedOperatorRemovedEvent {
   caller: string;
   operator: string;
@@ -1877,12 +1888,6 @@ export function parseOperatorRemovedEvent(rawEvent: unknown): ParsedOperatorRemo
     const operator = String(scValToNative(parsedTopics[2]) ?? "");
     const data = scValToNative(parsedValue as xdr.ScVal);
     const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
-    const timestamp = decodeBigInt(arr[0]);
-
-    return { caller, operator, timestamp };
-
-    const data = scValToNative(parsedValue as xdr.ScVal);
-    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
     const timestamp = decodeBigInt(arr[0] ?? 0n);
     const reason = arr[1] != null ? String(arr[1]) : null;
 
@@ -1901,14 +1906,6 @@ export interface ParsedZkmeVerifierUpdatedEvent {
 }
 
 export function parseZkmeVerifierUpdatedEvent(rawEvent: unknown): ParsedZkmeVerifierUpdatedEvent | null {
-// ── Issue #594: role events ─────────────────────────────────────────────────
-
-export interface ParsedRoleGrantedEvent {
-  userAddress: string;
-  role: string;
-}
-
-export function parseRoleGrantedEvent(rawEvent: unknown): ParsedRoleGrantedEvent | null {
   try {
     if (!rawEvent || typeof rawEvent !== "object") return null;
     const ev = rawEvent as Record<string, unknown>;
@@ -1939,6 +1936,40 @@ export function parseRoleGrantedEvent(rawEvent: unknown): ParsedRoleGrantedEvent
     const newVerifier = String(arr[1] ?? "");
 
     return { caller, oldVerifier, newVerifier };
+  } catch {
+    return null;
+  }
+}
+
+// ── Issue #594: role events ─────────────────────────────────────────────────
+
+export interface ParsedRoleGrantedEvent {
+  userAddress: string;
+  role: string;
+}
+
+export function parseRoleGrantedEvent(rawEvent: unknown): ParsedRoleGrantedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
     if (eventName !== "role_grt") return null;
 
     const userAddress = String(scValToNative(parsedTopics[1]) ?? "");
@@ -1963,32 +1994,6 @@ export interface ParsedKycSetEvent {
 }
 
 export function parseKycSetEvent(rawEvent: unknown): ParsedKycSetEvent | null {
-export interface ParsedUnpausedEvent {
-  contractId: string;
-}
-
-export function parseUnpausedEvent(rawEvent: any): ParsedUnpausedEvent | null {
-  try {
-    const parsed = parseRawEventName(rawEvent);
-    if (!parsed) return null;
-    const { topics } = parsed;
-    let eventName = "";
-    try {
-      const firstTopic = typeof topics[0] === "string"
-        ? xdr.ScVal.fromXDR(topics[0], "base64")
-        : (topics[0] as any);
-      eventName = scValToNative(firstTopic as any);
-    } catch {
-      return null;
-    }
-    if (eventName !== "unpaused" && eventName !== "v_unpause") return null;
-    return { contractId: String(rawEvent?.contractId ?? "") };
-export interface ParsedRoleRevokedEvent {
-  userAddress: string;
-  role: string;
-}
-
-export function parseRoleRevokedEvent(rawEvent: unknown): ParsedRoleRevokedEvent | null {
   try {
     if (!rawEvent || typeof rawEvent !== "object") return null;
     const ev = rawEvent as Record<string, unknown>;
@@ -2019,6 +2024,63 @@ export function parseRoleRevokedEvent(rawEvent: unknown): ParsedRoleRevokedEvent
     const timestamp = decodeBigInt(arr[1] ?? 0n);
 
     return { user, verified, timestamp };
+  } catch {
+    return null;
+  }
+}
+
+export interface ParsedUnpausedEvent {
+  contractId: string;
+}
+
+export function parseUnpausedEvent(rawEvent: any): ParsedUnpausedEvent | null {
+  try {
+    const parsed = parseRawEventName(rawEvent);
+    if (!parsed) return null;
+    const { topics } = parsed;
+    let eventName = "";
+    try {
+      const firstTopic = typeof topics[0] === "string"
+        ? xdr.ScVal.fromXDR(topics[0], "base64")
+        : (topics[0] as any);
+      eventName = scValToNative(firstTopic as any);
+    } catch {
+      return null;
+    }
+    if (eventName !== "unpaused" && eventName !== "v_unpause") return null;
+    return { contractId: String(rawEvent?.contractId ?? "") };
+  } catch {
+    return null;
+  }
+}
+
+export interface ParsedRoleRevokedEvent {
+  userAddress: string;
+  role: string;
+}
+
+export function parseRoleRevokedEvent(rawEvent: unknown): ParsedRoleRevokedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
     if (eventName !== "role_rvk") return null;
 
     const userAddress = String(scValToNative(parsedTopics[1]) ?? "");

@@ -147,6 +147,11 @@ export async function getUserKycHistory(req: Request, res: Response, next: NextF
     });
 
     res.json({ data, total, page, pageSize });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getKycBatch(req: Request, res: Response, next: NextFunction) {
   try {
     const { addresses, vaultId } = req.body as { addresses: string[]; vaultId: string };

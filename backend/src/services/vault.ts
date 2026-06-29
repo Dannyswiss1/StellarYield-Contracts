@@ -56,6 +56,17 @@ function computeFundingProgress(totalAssets: string, fundingTarget: string | nul
   return Math.min(100, (parseFloat(totalAssets) / target) * 100);
 }
 
+function extractAddressFromScVal(topic: unknown): string {
+  if (typeof topic === "string") {
+    try {
+      return String(scValToNative(xdr.ScVal.fromXDR(topic, "base64")));
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
 function mapVaultRow(row: VaultRow): Vault {
   return {
     id: row.id,
@@ -226,40 +237,6 @@ export class VaultService {
       );
       total = parseInt(countResult[0]?.count ?? "0", 10);
     }
-
-    // Build WHERE clause if state filter is provided
-    const whereClause = state ? "WHERE v.state = $3" : "";
-    const params: any[] = [pageSize, offset];
-    if (state) params.push(state);
-
-    // Query vaults with pagination.
-    // COALESCE(v.total_assets, '0') guarantees every vault item in the response
-    // carries a non-null totalAssets string, satisfying issue #499.
-    const vaults = await query<VaultRow>(
-      `SELECT v.id, v.contract_id, v.factory_id, v.asset, v.name, v.symbol, v.state,
-              v.total_assets, v.total_supply, v.created_at, v.updated_at,
-              v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
-              v.zkme_verifier_address,
-              COALESCE((
-                SELECT COUNT(*)::int
-                FROM user_vault_positions uvp
-                WHERE uvp.vault_id = v.id AND uvp.shares > 0
-              ), 0) AS depositor_count
-       FROM vaults v
-       ${whereClause}
-       ORDER BY v.${sortColumn} ${sortDirection}
-       LIMIT $1 OFFSET $2`,
-      params,
-    );
-
-    // Get total count
-    const countResult = await query<{ count: string }>(
-      `SELECT COUNT(*) as count
-       FROM vaults v
-       ${state ? "WHERE v.state = $1" : ""}`,
-      state ? [state] : [],
-    );
-    const total = parseInt(countResult[0]?.count ?? "0", 10);
 
     // Map database rows to Vault type
     const data: Vault[] = vaults.map(mapVaultRow);
@@ -811,18 +788,6 @@ export class VaultService {
 
     return { data, total, page, pageSize };
   }
-}
-
-function extractAddressFromScVal(topic: unknown): string {
-  if (typeof topic === "string") {
-    try {
-      return String(scValToNative(xdr.ScVal.fromXDR(topic, "base64")));
-    } catch {
-      return "";
-    }
-  }
-  return "";
-}
 
   // ── Issue #640 / #646: Combined search with optional fuzzy matching ──────────
   async searchVaults(opts: {
