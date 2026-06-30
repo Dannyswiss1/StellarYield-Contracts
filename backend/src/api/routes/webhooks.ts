@@ -21,6 +21,9 @@ const KNOWN_EVENTS = [
   "user.deposit",
   "user.withdraw",
   "user.early_redemption_requested",
+  "vault.cancelled",
+  "vault.matured",
+  "vault.funded",
 ] as const;
 
 const createWebhookSchema = z.object({

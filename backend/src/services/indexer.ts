@@ -399,6 +399,17 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for cancel_funding");
       }
+      try {
+        const cancelledAt =
+          (typeof event.ledgerClosedAt === "string" && event.ledgerClosedAt) ||
+          new Date().toISOString();
+        await this.notificationService?.notify("vault.cancelled", {
+          contractId: event.contractId ?? "",
+          cancelledAt,
+        });
+      } catch (e) {
+        logger.warn({ err: e }, "NotificationService.notify failed for vault.cancelled");
+      }
       return;
     }
 
