@@ -74,6 +74,8 @@ npm run dev
 - `npm run lint` - lint files under `src/`.
 - `npm test` - run the Vitest suite.
 - `npm run db:migrate` - apply `src/db/schema.sql` to PostgreSQL.
+- `npm run indexer` - run the event indexer.
+- `npm run operator-expiry-task` - run operator expiry background task.
 
 ## Environment Variables
 
@@ -90,11 +92,14 @@ npm run dev
 | `INDEXER_START_LEDGER` | No | `0` | Ledger to begin indexing from. |
 | `INDEXER_POLL_INTERVAL_MS` | No | `5000` | Indexer polling interval. |
 | `WEBHOOK_SECRET` | No | empty | Optional webhook signing secret. |
+| `ADMIN_API_KEY` | No | empty | Admin API authentication key. |
 
 Docker Compose reads `.env.example` and overrides `DATABASE_URL` so the backend
 connects to the `postgres` service.
 
 ## API Routes
+
+### Public Endpoints
 
 - `GET /health` - service and database health check.
 - `GET /api/v1/vaults` - list vaults.
@@ -102,6 +107,7 @@ connects to the `postgres` service.
 - `GET /api/v1/vaults/count` - return the total number of vaults.
 - `GET /api/v1/vaults/factory/:factoryId` - list vaults for a factory.
 - `GET /api/v1/vaults/:contractId` - get a vault by contract ID.
+- `GET /api/v1/vaults/:contractId/operators` - list active operators (filters expired).
 - `GET /api/v1/vaults/:contractId/positions` - list vault positions.
 - `GET /api/v1/vaults/:contractId/holders?page=&pageSize=&sort=` - list active vault holders, sorted by `shares` or `deposited`.
 - `GET /api/v1/vaults/:contractId/holders/count` - return the active holder count for a vault.
@@ -111,10 +117,24 @@ connects to the `postgres` service.
 - `GET /api/v1/users/:address` - get a user by Stellar address.
 - `GET /api/v1/users/:address/kyc?vaultId=:contractId` - live-read on-chain KYC status for a vault.
 - `GET /api/v1/users/:address/portfolio` - get a user's portfolio.
+- `GET /api/v1/users/:address/yield-history` - user yield history.
+- `GET /api/v1/users/:address/deposits` - user deposits.
 - `GET /api/v1/users/:address/share-history?vaultId=:contractId` - get epoch-ordered share balance history; omit `vaultId` to aggregate across vaults by epoch.
 - `POST /api/v1/users/portfolios/batch` - batch-fetch portfolios for up to 50 addresses (`{ addresses: string[] }`).
 - `GET /api/v1/yields/:contractId/epochs` - list vault yield epochs.
 - `GET /api/v1/yields/:contractId/pending/:userAddress` - get pending yield.
+
+### Admin Endpoints
+
+Require `X-API-Key` header with admin key.
+
+- `POST /api/v1/admin/indexer/replay` - replay events for a ledger range.
+- `GET /api/v1/admin/vaults/:contractId/audit` - audit log.
+- `GET /api/v1/admin/events` - indexed events.
+
+## Documentation
+
+- [Webhook Documentation](docs/webhooks.md) - Webhook payload schemas and verification
 
 ## Vault States
 
