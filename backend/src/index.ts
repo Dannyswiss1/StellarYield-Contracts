@@ -1,36 +1,26 @@
-import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import { config } from './config';
-import vaultsRouter from './routes/vaults';
-import usersRouter from './routes/users';
-import adminRouter from './routes/admin';
-import { startOperatorExpiryTask } from './tasks/operatorExpiry';
+import { createApp } from "./app.js";
+import { config } from "./config.js";
+import { logger } from "./logger.js";
+import { indexer } from "./services/indexerSingleton.js";
+import { EventsPruner } from "./services/eventsPruner.js";
 
-const app = express();
+const app = createApp();
+const pruner = new EventsPruner();
 
-app.use(helmet());
-app.use(cors());
-app.use(express.json());
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: Date.now() });
+const server = app.listen(config.port, () => {
+  logger.info({ port: config.port, env: config.nodeEnv }, "StellarYield backend started");
+  void indexer.start();
+  pruner.start();
 });
 
-app.use('/api/v1/vaults', vaultsRouter);
-app.use('/api/v1/users', usersRouter);
-app.use('/api/v1/admin', adminRouter);
+function shutdown(): void {
+  logger.info("Shutting down");
+  indexer.stop();
+  pruner.stop();
+  server.close(() => {
+    logger.info("StellarYield backend stopped");
+  });
+}
 
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong' });
-});
-
-const PORT = config.port;
-
-app.listen(PORT, () => {
-  console.log(`StellarYield API server running on port ${PORT}`);
-  console.log(`Environment: ${config.nodeEnv}`);
-  
-  startOperatorExpiryTask();
-});
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

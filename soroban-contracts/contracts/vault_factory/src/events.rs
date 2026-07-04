@@ -1,6 +1,6 @@
 //! Events for VaultFactory.
 
-use soroban_sdk::{symbol_short, Address, Env, String};
+use soroban_sdk::{symbol_short, Address, BytesN, Env, String};
 
 use crate::types::{Role, VaultType};
 
@@ -10,10 +10,20 @@ pub fn emit_vault_created(
     vault_type: VaultType,
     name: String,
     creator: Address,
+    operator_fee_bps: u32,
+    maturity_date: u64,
+    expected_apy: u32,
 ) {
     e.events().publish(
         (symbol_short!("v_create"), vault),
-        (vault_type, name, creator),
+        (
+            vault_type,
+            name,
+            creator,
+            operator_fee_bps,
+            maturity_date,
+            expected_apy,
+        ),
     );
 }
 
@@ -44,9 +54,38 @@ pub fn emit_vault_removed(e: &Env, vault: Address, removed_by: Address) {
         .publish((symbol_short!("v_remove"), vault), removed_by);
 }
 
+/// Emitted when the vault WASM hash is updated by the admin.
+///
+/// # Arguments
+/// * `old_hash` - Previous WASM hash (helps off-chain systems track changes)
+/// * `new_hash` - New WASM hash being set
+/// * `updated_by` - Address that performed the update
+///
+/// Off-chain indexers can use this event to:
+/// - Track WASM hash history without heavy RPC calls
+/// - Support pagination UIs by indexing events instead of calling contract views
+/// - Detect unauthorized changes by monitoring `updated_by`
+pub fn emit_wasm_hash_updated(
+    e: &Env,
+    old_hash: BytesN<32>,
+    new_hash: BytesN<32>,
+    updated_by: Address,
+) {
+    e.events().publish(
+        (symbol_short!("wasm_upd"), updated_by),
+        (old_hash, new_hash),
+    );
+}
+
 /// Emitted when the admin grants a role to an address.
 pub fn emit_role_granted(e: &Env, addr: Address, role: Role) {
     e.events().publish((symbol_short!("role_grt"), addr), role);
+}
+
+/// Emitted by `migrate` — storage schema upgraded.
+pub fn emit_data_migrated(e: &Env, old_version: u32, new_version: u32) {
+    e.events()
+        .publish((symbol_short!("data_mig"), old_version, new_version), ());
 }
 
 /// Emitted when the admin revokes a role from an address.

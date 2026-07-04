@@ -1,0 +1,28 @@
+name: Close Linked Issues
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  close-linked-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close issues referenced in PR body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "$PR_BODY" \
+            | grep -oiE '(closes|fixes|resolves)[[:space:]]+#[0-9]+' \
+            | grep -oE '[0-9]+' \
+            | while read -r ISSUE; do
+                gh issue close "$ISSUE" --repo "$REPO" \
+                  --comment "Closed via PR #$PR_NUMBER."
+              done

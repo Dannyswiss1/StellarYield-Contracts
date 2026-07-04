@@ -1,6 +1,6 @@
 //! Shared types for VaultFactory.
 
-use soroban_sdk::{contracttype, Address, String};
+use soroban_sdk::{contracttype, Address, BytesN, String};
 
 /// Vault type — mirrors the Solidity VaultType enum.
 #[contracttype]
@@ -11,6 +11,10 @@ pub enum VaultType {
 }
 
 /// Vault registration metadata.
+///
+/// Fields added for issue #515 (operatorFeeBps), #516 (maturityDate),
+/// and #517 (expectedApy) so that frontends can display fee, maturity,
+/// and APY data without an additional on-chain read.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct VaultInfo {
@@ -19,6 +23,27 @@ pub struct VaultInfo {
     pub vault_type: VaultType,
     pub name: String,
     pub symbol: String,
+    pub active: bool,
+    pub created_at: u64,
+    /// Operator fee in basis points (issue #515). Sourced from
+    /// `early_redemption_fee_bps` set at vault creation.
+    pub operator_fee_bps: u32,
+    /// Unix timestamp (seconds) at which the vault matures (issue #516).
+    pub maturity_date: u64,
+    /// Expected APY in basis points as encoded on-chain (issue #517).
+    pub expected_apy: u32,
+}
+
+/// Lightweight vault metadata for list views.
+///
+/// Returns essential vault information without the full `VaultInfo` payload.
+/// Useful for list pages where full vault details are unnecessary.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VaultBrief {
+    pub name: String,
+    pub symbol: String,
+    pub asset: Address,
     pub active: bool,
     pub created_at: u64,
 }
@@ -48,6 +73,8 @@ pub struct SingleRwaVaultInitParams {
     pub rwa_document_uri: String,
     pub rwa_category: String,
     pub expected_apy: u32,
+    /// Lock-up period in seconds after deposit (0 = no lock-up).
+    pub lock_up_period: u64,
 }
 
 /// Parameters for batch vault creation (mirrors BatchVaultParams in Solidity).
@@ -78,6 +105,44 @@ pub type CreateVaultParams = BatchVaultParams;
 // Role-Based Access Control
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Snapshot of factory-level defaults returned by `get_defaults_snapshot()`.
+///
+/// Useful for vault creation forms and deployment scripts that need all
+/// factory defaults in a single contract call.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FactoryDefaultsSnapshot {
+    pub default_asset: Address,
+    pub zkme_verifier: Address,
+    pub cooperator: Address,
+    /// Default early-redemption fee in basis points (e.g. 200 = 2 %).
+    pub fee_bps: u32,
+    pub vault_wasm_hash: BytesN<32>,
+}
+
+/// Registry statistics snapshot containing aggregate vault metrics.
+///
+/// Useful for explorers and dashboards to efficiently retrieve key metrics
+/// without iterating through all vaults multiple times.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RegistryStats {
+    /// Total number of vaults in the registry (all states)
+    pub total_vaults: u32,
+    /// Number of vaults with `active` flag set to true
+    pub active_vaults: u32,
+    /// Address of the most recently deployed vault (or None if no vaults exist)
+    pub latest_vault: Option<Address>,
+}
+
+/// Status filter used by `list_vaults_by_status`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum VaultStatus {
+    Active,
+    Inactive,
+}
+
 /// Granular operator role for on-chain access control.
 ///
 /// `FullOperator` is the backward-compatible superrole equivalent to the old
@@ -98,3 +163,25 @@ pub enum Role {
     /// binary `Operator` flag — can create vaults and manage the factory.
     FullOperator,
 }
+
+/// Admin and configuration overview for the factory.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FactoryAdminOverview {
+    pub admin: Address,
+    pub default_asset: Address,
+    pub default_zkme_verifier: Address,
+    pub default_cooperator: Address,
+    pub vault_wasm_hash: BytesN<32>,
+    pub default_fee_bps: u32,
+    pub vault_count: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interface IDs for supports_interface (#299)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const INTERFACE_BASE: u32 = 1;
+pub const INTERFACE_FACTORY_REGISTRY: u32 = 100;
+pub const INTERFACE_FACTORY_DEPLOYER: u32 = 101;
+pub const INTERFACE_RBAC: u32 = 5;

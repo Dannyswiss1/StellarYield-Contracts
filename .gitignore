@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────
 # Rust / Cargo
 # ─────────────────────────────────────────────────────────────────
-target/
+**/target/
 **/*.rs.bk
 Cargo.lock
 
@@ -19,7 +19,7 @@ Contracts/out/
 Contracts/cache/
 Contracts/broadcast/
 Contracts/artifacts/
-test_snapshots/
+**/test_snapshots/
 # ─────────────────────────────────────────────────────────────────
 # Node / npm / yarn / pnpm
 # ─────────────────────────────────────────────────────────────────
@@ -34,7 +34,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
-package-lock.json
+# Keep SDK lockfile tracked for reproducible CI installs
+!sdk/package-lock.json
 
 # ─────────────────────────────────────────────────────────────────
 # Backend specific
@@ -85,7 +86,14 @@ coverage/
 *.log
 *.tmp
 *.bak
+**/check_output.txt
 
 issue.md
 pr.md
+LOCAL_LOW_COMPLEXITY_ISSUES.md
 ISSUES.md
+
+target/
+target_local/
+target_debug/
+

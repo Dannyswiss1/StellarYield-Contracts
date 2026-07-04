@@ -4,10 +4,11 @@
 
 use soroban_sdk::{symbol_short, Address, Env, String};
 
-use crate::types::{Role, VaultState};
+use crate::types::{EarlyRedemptionCloseReason, Role, VaultState};
 
-pub fn emit_zkme_verifier_updated(e: &Env, old: Address, new: Address) {
-    e.events().publish((symbol_short!("zkme_upd"),), (old, new));
+pub fn emit_zkme_verifier_updated(e: &Env, caller: Address, old: Address, new: Address) {
+    e.events()
+        .publish((symbol_short!("zkme_upd"), caller), (old, new));
 }
 
 pub fn emit_cooperator_updated(e: &Env, old: Address, new: Address) {
@@ -24,12 +25,32 @@ pub fn emit_yield_claimed(e: &Env, user: Address, amount: i128, epoch: u32) {
         .publish((symbol_short!("yield_clm"), user), (amount, epoch));
 }
 
+pub fn emit_yield_claimed_partial(e: &Env, user: Address, clm: i128, shf: i128, ep: u32) {
+    e.events()
+        .publish((symbol_short!("prt_yld"), user), (clm, shf, ep));
+}
+
+pub fn emit_yield_shortfall_resolved(e: &Env, user: Address, amt: i128, rem: i128) {
+    e.events()
+        .publish((symbol_short!("ys_res"), user), (amt, rem));
+}
+
 pub fn emit_vault_state_changed(e: &Env, old: VaultState, new: VaultState) {
     e.events().publish((symbol_short!("st_chg"),), (old, new));
 }
 
-pub fn emit_maturity_date_set(e: &Env, timestamp: u64) {
-    e.events().publish((symbol_short!("mat_set"),), timestamp);
+pub fn emit_maturity_date_set(
+    e: &Env,
+    caller: Address,
+    old: u64,
+    new: u64,
+    state: VaultState,
+    timestamp: u64,
+) {
+    e.events().publish(
+        (symbol_short!("mat_set"), caller),
+        (old, new, state, timestamp),
+    );
 }
 
 pub fn emit_deposit_limits_updated(e: &Env, min: i128, max: i128) {
@@ -39,6 +60,20 @@ pub fn emit_deposit_limits_updated(e: &Env, min: i128, max: i128) {
 pub fn emit_operator_updated(e: &Env, operator: Address, status: bool) {
     e.events()
         .publish((symbol_short!("op_upd"), operator), status);
+}
+
+/// Emitted when an operator is added (status=true).
+/// Includes caller and timestamp for off-chain monitoring.
+pub fn emit_operator_added(e: &Env, caller: Address, operator: Address, timestamp: u64) {
+    e.events()
+        .publish((symbol_short!("op_add"), caller, operator), timestamp);
+}
+
+pub fn emit_operator_removed(e: &Env, caller: Address, operator: Address, reason: Option<String>) {
+    e.events().publish(
+        (symbol_short!("op_rem"), caller, operator),
+        (e.ledger().timestamp(), reason),
+    );
 }
 
 /// Emitted when the admin grants a role to an address.
@@ -54,6 +89,19 @@ pub fn emit_role_revoked(e: &Env, addr: Address, role: Role) {
 pub fn emit_emergency_action(e: &Env, paused: bool, reason: String) {
     e.events()
         .publish((symbol_short!("emergency"),), (paused, reason));
+}
+
+/// Enriched pause lifecycle event (backward-compatible companion to `emit_emergency_action`).
+///
+/// Includes an actor role hint (`admin` or `operator`) to reduce off-chain chain reads.
+pub fn emit_emergency_action_v2(e: &Env, paused: bool, reason: String, is_admin_actor: bool) {
+    let actor_role = if is_admin_actor {
+        symbol_short!("admin")
+    } else {
+        symbol_short!("operator")
+    };
+    e.events()
+        .publish((symbol_short!("emerg_v2"),), (paused, reason, actor_role));
 }
 
 // SEP-41 events
@@ -121,25 +169,154 @@ pub fn emit_redeem_at_maturity(
     );
 }
 
+/// Which early-redemption user event to emit (same topics/data layout for all variants).
+#[derive(Copy, Clone)]
+enum EarlyRedemptionUserEventKind {
+    Processed,
+    Cancelled,
+}
+
+/// Which early-redemption non-success event to emit.
+#[derive(Copy, Clone)]
+enum EarlyRedemptionNonSuccessEventKind {
+    Cancelled,
+    Rejected,
+}
+
+/// Common early-redemption event layout: topics `(tag, user)`, data `(request_id, amount)`.
+///
+/// Each `symbol_short!` lives in a `match` arm so topic symbols stay compile-time literals
+/// (a single `publish` with a `Symbol` parameter is rejected by the Soroban host).
+fn publish_early_redemption_user_event(
+    e: &Env,
+    kind: EarlyRedemptionUserEventKind,
+    user: Address,
+    request_id: u32,
+    amount: i128,
+) {
+    match kind {
+        EarlyRedemptionUserEventKind::Processed => {
+            e.events()
+                .publish((symbol_short!("erq_done"), user), (request_id, amount));
+        }
+        EarlyRedemptionUserEventKind::Cancelled => {
+            e.events()
+                .publish((symbol_short!("erq_can"), user), (request_id, amount));
+        }
+    }
+}
+
+/// Enriched non-success early-redemption event layout: topics `(tag, user)`,
+/// data `(request_id, shares, reason_code)`.
+fn publish_early_redemption_non_success_event_v2(
+    e: &Env,
+    kind: EarlyRedemptionNonSuccessEventKind,
+    user: Address,
+    request_id: u32,
+    shares: i128,
+    reason: EarlyRedemptionCloseReason,
+    custom_reason: String,
+) {
+    match kind {
+        EarlyRedemptionNonSuccessEventKind::Cancelled => {
+            e.events().publish(
+                (symbol_short!("erq_can2"), user),
+                (request_id, shares, reason),
+            );
+        }
+        EarlyRedemptionNonSuccessEventKind::Rejected => {
+            e.events().publish(
+                (symbol_short!("erq_rej2"), user),
+                (request_id, shares, reason, custom_reason),
+            );
+        }
+    }
+}
+
 /// Emitted by `request_early_redemption`.
-pub fn emit_early_redemption_requested(e: &Env, user: Address, request_id: u32, shares: i128) {
-    e.events()
-        .publish((symbol_short!("erq_req"), user), (request_id, shares));
+///
+/// `queue_position` is an approximate 1-based position in the pending queue at
+/// the moment of submission (i.e. how many unprocessed requests preceded this
+/// one, plus one).  It is computed with a best-effort scan and may not reflect
+/// concurrent submissions; integrators should treat it as a UI hint only.
+pub fn emit_early_redemption_requested(
+    e: &Env,
+    user: Address,
+    request_id: u32,
+    shares: i128,
+    queue_position: u32,
+) {
+    e.events().publish(
+        (symbol_short!("erq_req"), user),
+        (request_id, shares, queue_position),
+    );
 }
 
 /// Emitted by `process_early_redemption`.
 pub fn emit_early_redemption_processed(e: &Env, user: Address, request_id: u32, net_assets: i128) {
-    e.events()
-        .publish((symbol_short!("erq_done"), user), (request_id, net_assets));
+    publish_early_redemption_user_event(
+        e,
+        EarlyRedemptionUserEventKind::Processed,
+        user,
+        request_id,
+        net_assets,
+    );
 }
 
 /// Emitted by `cancel_early_redemption`.
 pub fn emit_early_redemption_cancelled(e: &Env, user: Address, request_id: u32, shares: i128) {
-    e.events()
-        .publish((symbol_short!("erq_can"), user), (request_id, shares));
+    publish_early_redemption_user_event(
+        e,
+        EarlyRedemptionUserEventKind::Cancelled,
+        user,
+        request_id,
+        shares,
+    );
+}
+
+/// Enriched event emitted by `cancel_early_redemption` (backward-compatible companion
+/// to `emit_early_redemption_cancelled`).
+pub fn emit_early_redemption_cancelled_v2(
+    e: &Env,
+    user: Address,
+    request_id: u32,
+    shares: i128,
+    reason: EarlyRedemptionCloseReason,
+) {
+    publish_early_redemption_non_success_event_v2(
+        e,
+        EarlyRedemptionNonSuccessEventKind::Cancelled,
+        user,
+        request_id,
+        shares,
+        reason,
+        String::from_str(e, ""),
+    );
+}
+
+/// Enriched event emitted by `reject_early_redemption` (backward-compatible companion
+/// to `emit_early_redemption_cancelled`).
+pub fn emit_early_redemption_rejected_v2(
+    e: &Env,
+    user: Address,
+    request_id: u32,
+    shares: i128,
+    reason: EarlyRedemptionCloseReason,
+    custom_reason: String,
+) {
+    publish_early_redemption_non_success_event_v2(
+        e,
+        EarlyRedemptionNonSuccessEventKind::Rejected,
+        user,
+        request_id,
+        shares,
+        reason,
+        custom_reason,
+    );
 }
 
 /// Emitted by `transfer_admin`.
+#[allow(dead_code)]
 pub fn emit_admin_transferred(e: &Env, old_admin: Address, new_admin: Address) {
     e.events()
         .publish((symbol_short!("adm_xfr"),), (old_admin, new_admin));
@@ -165,15 +342,37 @@ pub fn emit_early_redemption_fee_set(e: &Env, fee_bps: u32) {
     e.events().publish((symbol_short!("fee_set"),), fee_bps);
 }
 
-/// Emitted by `set_funding_target`.
-pub fn emit_funding_target_set(e: &Env, target: i128) {
-    e.events().publish((symbol_short!("fund_set"),), target);
+pub fn emit_yield_vesting_period_set(e: &Env, vesting_period: u64) {
+    e.events()
+        .publish((symbol_short!("vest_set"),), vesting_period);
+}
+
+/// Emitted by `set_funding_target` / `set_funding_target_with_reason`.
+///
+/// `reason` is a short operator-provided context string (may be empty).
+pub fn emit_funding_target_set(
+    e: &Env,
+    caller: Address,
+    target: i128,
+    reason: String,
+    timestamp: u64,
+) {
+    e.events().publish(
+        (symbol_short!("fund_set"), caller),
+        (target, reason, timestamp),
+    );
 }
 
 /// Emitted by `set_blacklisted`.
 pub fn emit_address_blacklisted(e: &Env, address: Address, status: bool) {
     e.events()
         .publish((symbol_short!("blacklist"), address), status);
+}
+
+/// Emitted by `set_transfer_exempt`.
+pub fn emit_transfer_exemption_set(e: &Env, address: Address, exempt: bool) {
+    e.events()
+        .publish((symbol_short!("xfer_exm"), address), exempt);
 }
 
 /// Emitted by `cancel_funding` — vault moved to Cancelled state.
@@ -186,4 +385,81 @@ pub fn emit_funding_cancelled(e: &Env) {
 pub fn emit_refunded(e: &Env, user: Address, amount: i128) {
     e.events()
         .publish((symbol_short!("refunded"), user), amount);
+}
+
+/// Emitted by `set_cooperator` — cooperator address has been updated. (Task #346)
+pub fn emit_cooperator_fee_updated(e: &Env, old: Address, new: Address) {
+    e.events().publish((symbol_short!("coop_fee"),), (old, new));
+}
+
+/// Emitted by `emergency_enable_pro_rata` — vault enters Emergency state.
+pub fn emit_emergency_mode_enabled(e: &Env, balance: i128, total_supply: i128) {
+    e.events()
+        .publish((symbol_short!("emerg_on"),), (balance, total_supply));
+}
+
+/// Emitted by `emergency_claim` — user claimed their pro-rata share.
+pub fn emit_emergency_claimed(e: &Env, user: Address, amount: i128) {
+    e.events()
+        .publish((symbol_short!("emerg_clm"), user), amount);
+}
+
+/// Emitted by `migrate` — storage schema upgraded.
+pub fn emit_data_migrated(e: &Env, old_version: u32, new_version: u32) {
+    e.events()
+        .publish((symbol_short!("data_mig"), old_version, new_version), ());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timelock events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a timelock action is proposed.
+pub fn emit_action_proposed(
+    e: &Env,
+    action_id: u32,
+    action_type: crate::types::ActionType,
+    executable_at: u64,
+) {
+    e.events().publish(
+        (symbol_short!("act_prp"), action_id),
+        (action_type, executable_at),
+    );
+}
+
+/// Emitted when a timelock action is executed.
+#[allow(dead_code)]
+pub fn emit_action_executed(e: &Env, action_id: u32, action_type: crate::types::ActionType) {
+    e.events()
+        .publish((symbol_short!("act_exec"), action_id), action_type);
+}
+
+/// Emitted when a timelock action is cancelled.
+pub fn emit_action_cancelled(e: &Env, action_id: u32, action_type: crate::types::ActionType) {
+    e.events()
+        .publish((symbol_short!("act_canc"), action_id), action_type);
+}
+
+/// Emitted by `propose_emergency_withdraw` — a new multi-sig proposal was created.
+pub fn emit_emergency_proposed(e: &Env, proposal_id: u32, proposer: Address, recipient: Address) {
+    e.events().publish(
+        (symbol_short!("emg_prop"), proposal_id),
+        (proposer, recipient),
+    );
+}
+
+/// Emitted by `approve_emergency_withdraw` — a signer approved a proposal.
+pub fn emit_emergency_approved(e: &Env, proposal_id: u32, approver: Address, approval_count: u32) {
+    e.events().publish(
+        (symbol_short!("emg_appr"), proposal_id),
+        (approver, approval_count),
+    );
+}
+
+/// Emitted by `execute_emergency_withdraw` — the multi-sig withdrawal was executed.
+pub fn emit_emergency_executed(e: &Env, proposal_id: u32, recipient: Address, amount: i128) {
+    e.events().publish(
+        (symbol_short!("emg_exec"), proposal_id),
+        (recipient, amount),
+    );
 }

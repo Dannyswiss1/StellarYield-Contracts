@@ -24,13 +24,17 @@ fn default_params(env: &Env, admin: &Address, asset: &Address) -> InitParams {
         maturity_date: 9_999_999_999_u64,
         min_deposit: 1_000_i128,
         max_deposit_per_user: 0_i128,
-        early_redemption_fee_bps: 100_u32,
-        funding_deadline: 0_u64,
+        early_redemption_fee_bps: 0u32,
+        operator_fee_bps: 0u32,
+        funding_deadline: 0u64,
         rwa_name: String::from_str(env, "Test RWA"),
         rwa_symbol: String::from_str(env, "TRWA"),
         rwa_document_uri: String::from_str(env, "https://test.com"),
         rwa_category: String::from_str(env, "Real Estate"),
         expected_apy: 500_u32,
+        timelock_delay: 172800u64, // 48 hours
+        yield_vesting_period: 0u64,
+        lock_up_period: 0u64,
     }
 }
 
@@ -70,7 +74,7 @@ fn test_grant_and_revoke_role() {
     client.grant_role(&admin, &addr, &Role::YieldOperator);
     assert!(client.has_role(&addr, &Role::YieldOperator));
 
-    client.revoke_role(&admin, &addr, &Role::YieldOperator);
+    client.revoke_role(&admin, &addr, &Role::YieldOperator, &None);
     assert!(!client.has_role(&addr, &Role::YieldOperator));
 }
 
@@ -124,11 +128,11 @@ fn test_set_operator_grants_full_operator() {
     let op = Address::generate(&env);
 
     // Backward-compat API
-    client.set_operator(&admin, &op, &true);
+    client.set_operator(&admin, &op, &true, &None);
     assert!(client.is_operator(&op));
     assert!(client.has_role(&op, &Role::FullOperator));
 
-    client.set_operator(&admin, &op, &false);
+    client.set_operator(&admin, &op, &false, &None);
     assert!(!client.is_operator(&op));
     assert!(!client.has_role(&op, &Role::FullOperator));
 }
@@ -146,12 +150,37 @@ fn test_yield_operator_can_distribute_yield() {
     // Activate vault so distribute_yield is reachable.
     let lm = Address::generate(&env);
     client.grant_role(&admin, &lm, &Role::LifecycleManager);
+
+    // Deposit first so there are shareholders (Issue #97 fix)
+    let depositor = Address::generate(&env);
+    mint_asset(&env, &asset_id, &depositor, 10_000_i128);
+    client.deposit(&depositor, &10_000_i128, &depositor);
+
     client.activate_vault(&lm);
 
     // Give the yield operator enough tokens to inject yield.
     mint_asset(&env, &asset_id, &yield_op, 1_000_000_i128);
     client.distribute_yield(&yield_op, &500_000_i128);
     assert_eq!(client.current_epoch(), 1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #50)")] // NoShareholders error
+fn test_distribute_yield_with_no_shareholders_panics() {
+    let (env, vault_id, asset_id, admin) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+    let yield_op = Address::generate(&env);
+
+    client.grant_role(&admin, &yield_op, &Role::YieldOperator);
+
+    // Activate vault without any deposits (Issue #97 test)
+    let lm = Address::generate(&env);
+    client.grant_role(&admin, &lm, &Role::LifecycleManager);
+    client.activate_vault(&lm);
+
+    // Try to distribute yield with no shareholders - should panic
+    mint_asset(&env, &asset_id, &yield_op, 1_000_000_i128);
+    client.distribute_yield(&yield_op, &500_000_i128);
 }
 
 #[test]
@@ -243,6 +272,18 @@ fn test_compliance_officer_can_set_zkme_verifier() {
     client.grant_role(&admin, &co, &Role::ComplianceOfficer);
     // Should not panic.
     client.set_zkme_verifier(&co, &new_verifier);
+}
+
+#[test]
+#[should_panic]
+fn test_compliance_officer_cannot_set_transfer_exempt() {
+    let (env, vault_id, _, admin) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+    let co = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    client.grant_role(&admin, &co, &Role::ComplianceOfficer);
+    client.set_transfer_exempt(&co, &target, &true);
 }
 
 #[test]

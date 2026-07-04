@@ -7,10 +7,11 @@ use soroban_sdk::{
 };
 
 use crate::storage::{
-    get_has_snapshot_for_epoch, get_share_balance, get_total_supply, get_user_shares_at_epoch,
-    put_current_epoch, put_epoch_total_shares, put_epoch_yield, put_share_balance,
-    put_total_supply,
+    get_current_epoch, get_has_snapshot_for_epoch, get_share_balance, get_total_deposited,
+    get_total_supply, get_user_shares_at_epoch, put_current_epoch, put_epoch_total_shares,
+    put_epoch_yield, put_share_balance, put_total_deposited, put_total_supply,
 };
+use crate::test_helpers::{mint_usdc, setup_with_kyc_bypass};
 use crate::{InitParams, SingleRWAVault, SingleRWAVaultClient};
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -29,12 +30,16 @@ fn default_params(env: &Env, admin: &Address, asset: &Address) -> InitParams {
         min_deposit: 1_000_i128,
         max_deposit_per_user: 0_i128,
         early_redemption_fee_bps: 100_u32,
+        operator_fee_bps: 0u32,
         funding_deadline: 0_u64,
         rwa_name: String::from_str(env, "Test RWA"),
         rwa_symbol: String::from_str(env, "TRWA"),
         rwa_document_uri: String::from_str(env, "https://test.com"),
         rwa_category: String::from_str(env, "Real Estate"),
         expected_apy: 500_u32,
+        timelock_delay: 172800u64, // 48 hours
+        yield_vesting_period: 0u64,
+        lock_up_period: 0u64,
     }
 }
 
@@ -51,7 +56,7 @@ fn setup() -> (Env, Address, Address, Address) {
     let vault_id = env.register(SingleRWAVault, (default_params(&env, &admin, &asset_id),));
 
     // Redirect zkme_verifier to the vault itself → is_kyc_verified always true.
-    SingleRWAVaultClient::new(&env, &vault_id).set_zkme_verifier(&admin, &vault_id);
+    SingleRWAVaultClient::new(&env, &vault_id).set_zkme_verifier(&admin, &vault_id.clone());
 
     (env, vault_id, asset_id, admin)
 }
@@ -64,6 +69,10 @@ fn give_shares(env: &Env, vault_id: &Address, user: &Address, amount: i128) {
         put_share_balance(env, user, bal + amount);
         let sup = get_total_supply(env);
         put_total_supply(env, sup + amount);
+        // `total_assets` tracks principal (`total_deposited`); keep it in sync so
+        // preview_* redeem/withdraw math matches share supply.
+        let td = get_total_deposited(env);
+        put_total_deposited(env, td + amount);
     });
 }
 
@@ -343,4 +352,316 @@ fn test_transfer_from_expired_allowance_panics() {
 
     // This must panic because get_share_allowance returns 0 for expired allowances.
     client.transfer_from(&spender, &alice, &bob, &100_i128);
+}
+
+// ─── preview_* purity (#179) ──────────────────────────────────────────────────
+
+/// preview_deposit called repeatedly must not mutate total_supply or the
+/// current epoch — it is a pure view.
+#[test]
+fn test_preview_deposit_does_not_mutate_state() {
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+
+    // Seed some shares so the ratio is non-trivial.
+    let alice = Address::generate(&env);
+    give_shares(&env, &vault_id, &alice, 5_000_i128);
+
+    let (supply_before, epoch_before) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    // Call three times with different inputs — none must mutate state.
+    let _ = client.preview_deposit(&1_000_i128);
+    let _ = client.preview_deposit(&5_000_i128);
+    let _ = client.preview_deposit(&10_000_i128);
+
+    let (supply_after, epoch_after) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    assert_eq!(
+        supply_before, supply_after,
+        "preview_deposit must not change total_supply"
+    );
+    assert_eq!(
+        epoch_before, epoch_after,
+        "preview_deposit must not change current_epoch"
+    );
+}
+
+/// preview_mint called repeatedly must not mutate total_supply or the
+/// current epoch.
+#[test]
+fn test_preview_mint_does_not_mutate_state() {
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+
+    let alice = Address::generate(&env);
+    give_shares(&env, &vault_id, &alice, 5_000_i128);
+
+    let (supply_before, epoch_before) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    let _ = client.preview_mint(&500_i128);
+    let _ = client.preview_mint(&2_000_i128);
+    let _ = client.preview_mint(&5_000_i128);
+
+    let (supply_after, epoch_after) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    assert_eq!(
+        supply_before, supply_after,
+        "preview_mint must not change total_supply"
+    );
+    assert_eq!(
+        epoch_before, epoch_after,
+        "preview_mint must not change current_epoch"
+    );
+}
+
+/// preview_withdraw called repeatedly must not mutate total_supply or the
+/// current epoch.
+#[test]
+fn test_preview_withdraw_does_not_mutate_state() {
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+
+    let alice = Address::generate(&env);
+    give_shares(&env, &vault_id, &alice, 5_000_i128);
+
+    let (supply_before, epoch_before) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    let _ = client.preview_withdraw(&100_i128);
+    let _ = client.preview_withdraw(&1_000_i128);
+    let _ = client.preview_withdraw(&3_000_i128);
+
+    let (supply_after, epoch_after) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    assert_eq!(
+        supply_before, supply_after,
+        "preview_withdraw must not change total_supply"
+    );
+    assert_eq!(
+        epoch_before, epoch_after,
+        "preview_withdraw must not change current_epoch"
+    );
+}
+
+/// preview_redeem called repeatedly must not mutate total_supply or the
+/// current epoch.
+#[test]
+fn test_preview_redeem_does_not_mutate_state() {
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+
+    let alice = Address::generate(&env);
+    give_shares(&env, &vault_id, &alice, 5_000_i128);
+
+    let (supply_before, epoch_before) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    let _ = client.preview_redeem(&500_i128);
+    let _ = client.preview_redeem(&2_000_i128);
+    let _ = client.preview_redeem(&5_000_i128);
+
+    let (supply_after, epoch_after) = env.as_contract(&vault_id, || {
+        (get_total_supply(&env), get_current_epoch(&env))
+    });
+
+    assert_eq!(
+        supply_before, supply_after,
+        "preview_redeem must not change total_supply"
+    );
+    assert_eq!(
+        epoch_before, epoch_after,
+        "preview_redeem must not change current_epoch"
+    );
+}
+
+/// Repeated calls to every preview_* function return consistent results —
+/// calling the same function twice with the same input yields the same output.
+#[test]
+fn test_preview_calls_return_consistent_results() {
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+
+    let alice = Address::generate(&env);
+    give_shares(&env, &vault_id, &alice, 5_000_i128);
+
+    let assets_in = 2_000_i128;
+    let shares_in = 1_500_i128;
+
+    let deposit1 = client.preview_deposit(&assets_in);
+    let deposit2 = client.preview_deposit(&assets_in);
+    assert_eq!(deposit1, deposit2, "preview_deposit must be idempotent");
+
+    let mint1 = client.preview_mint(&shares_in);
+    let mint2 = client.preview_mint(&shares_in);
+    assert_eq!(mint1, mint2, "preview_mint must be idempotent");
+
+    let withdraw1 = client.preview_withdraw(&assets_in);
+    let withdraw2 = client.preview_withdraw(&assets_in);
+    assert_eq!(withdraw1, withdraw2, "preview_withdraw must be idempotent");
+
+    let redeem1 = client.preview_redeem(&shares_in);
+    let redeem2 = client.preview_redeem(&shares_in);
+    assert_eq!(redeem1, redeem2, "preview_redeem must be idempotent");
+}
+
+// ─── Zero-amount edge cases (#174) ────────────────────────────────────────────
+
+/// All ERC-4626 preview helpers accept `amount = 0` and return 0 without panicking.
+#[test]
+fn test_preview_methods_zero_amount_return_zero() {
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+
+    assert_eq!(client.preview_deposit(&0_i128), 0_i128);
+    assert_eq!(client.preview_mint(&0_i128), 0_i128);
+    assert_eq!(client.preview_withdraw(&0_i128), 0_i128);
+    assert_eq!(client.preview_redeem(&0_i128), 0_i128);
+
+    let holder = Address::generate(&env);
+    give_shares(&env, &vault_id, &holder, 10_000_i128);
+    assert_eq!(client.preview_withdraw(&0_i128), 0_i128);
+    assert_eq!(client.preview_redeem(&0_i128), 0_i128);
+}
+
+/// deposit with `assets = 0` is rejected when `min_deposit` is strictly positive.
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_deposit_zero_below_minimum_panics() {
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+    let user = Address::generate(&env);
+    client.deposit(&user, &0_i128, &user);
+}
+
+/// withdraw with `assets = 0` is rejected with Error::ZeroAmount.
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_withdraw_zero_amount_panics() {
+    let ctx = setup_with_kyc_bypass();
+    let v = ctx.vault();
+    let dep = ctx.params.funding_target;
+    mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, dep);
+    v.deposit(&ctx.user, &dep, &ctx.user);
+    v.activate_vault(&ctx.operator);
+    v.withdraw(&ctx.user, &0_i128, &ctx.user, &ctx.user);
+}
+
+/// redeem with `shares = 0` is rejected with Error::ZeroAmount.
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_redeem_zero_shares_panics() {
+    let ctx = setup_with_kyc_bypass();
+    let v = ctx.vault();
+    let dep = ctx.params.funding_target;
+    mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, dep);
+    v.deposit(&ctx.user, &dep, &ctx.user);
+    v.activate_vault(&ctx.operator);
+    v.redeem(&ctx.user, &0_i128, &ctx.user, &ctx.user);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #197: Transfer of shares during an active epoch.
+//
+// Transferring shares mid-epoch triggers update_user_snapshot for both
+// sender and receiver, recording their pre-transfer balances.  Yield
+// distributed *after* the transfer is therefore split according to the
+// snapshot balances, not the post-transfer balances.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Alice holds all shares at epoch start.  She transfers half to Bob
+/// mid-epoch.  After yield is distributed (epoch 1), Alice's pending yield
+/// is based on her full pre-transfer balance and Bob's is based on 0
+/// (he held nothing when the snapshot was taken).
+#[test]
+fn test_transfer_mid_epoch_yield_split() {
+    use crate::storage::{get_has_snapshot_for_epoch, get_user_shares_at_epoch};
+
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Give Alice 1 000 shares before any epoch accounting exists.
+    give_shares(&env, &vault_id, &alice, 1_000_i128);
+
+    // Advance to epoch 1 (mimics what distribute_yield would record).
+    advance_epoch(&env, &vault_id, 1, 100_i128, 1_000_i128);
+
+    // Alice transfers 400 shares to Bob mid-epoch.
+    // update_user_snapshots_for_transfer fires here, snapshotting both
+    // parties with their *current* (pre-transfer) balances.
+    client.transfer(&alice, &bob, &400_i128);
+
+    // ── Snapshot assertions ───────────────────────────────────────────────
+    env.as_contract(&vault_id, || {
+        // Alice's snapshot: 1 000 (full balance before transfer)
+        assert!(get_has_snapshot_for_epoch(&env, &alice, 1));
+        assert_eq!(get_user_shares_at_epoch(&env, &alice, 1), 1_000_i128);
+
+        // Bob's snapshot: 0 (he held nothing before the transfer)
+        assert!(get_has_snapshot_for_epoch(&env, &bob, 1));
+        assert_eq!(get_user_shares_at_epoch(&env, &bob, 1), 0_i128);
+    });
+
+    // ── Post-transfer balances ────────────────────────────────────────────
+    assert_eq!(client.balance(&alice), 600_i128);
+    assert_eq!(client.balance(&bob), 400_i128);
+
+    // ── Pending yield reflects snapshot, not current balance ──────────────
+    // Alice contributed 1 000 / 1 000 = 100 % of epoch-1 shares → all yield.
+    let alice_yield = client.pending_yield(&alice);
+    let bob_yield = client.pending_yield(&bob);
+
+    assert_eq!(
+        alice_yield, 100_i128,
+        "alice should receive full epoch-1 yield"
+    );
+    assert_eq!(bob_yield, 0_i128, "bob held no shares at epoch-1 snapshot");
+}
+
+/// Verify that a second transfer in the same epoch does NOT overwrite the
+/// already-recorded snapshot (snapshot is written once per epoch per user).
+#[test]
+fn test_transfer_mid_epoch_snapshot_written_once() {
+    use crate::storage::get_user_shares_at_epoch;
+
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    give_shares(&env, &vault_id, &alice, 1_000_i128);
+    give_shares(&env, &vault_id, &bob, 500_i128);
+
+    advance_epoch(&env, &vault_id, 1, 150_i128, 1_500_i128);
+
+    // First transfer: alice → bob 200 shares
+    client.transfer(&alice, &bob, &200_i128);
+
+    // Second transfer: bob → alice 100 shares (same epoch)
+    client.transfer(&bob, &alice, &100_i128);
+
+    env.as_contract(&vault_id, || {
+        // Alice's snapshot must still reflect her balance at the FIRST transfer
+        // (1 000), not the balance at the second transfer (800).
+        assert_eq!(get_user_shares_at_epoch(&env, &alice, 1), 1_000_i128);
+        // Bob's snapshot: 500 (balance at first transfer where he was receiver)
+        assert_eq!(get_user_shares_at_epoch(&env, &bob, 1), 500_i128);
+    });
+
+    // Final balances after both transfers
+    assert_eq!(client.balance(&alice), 900_i128); // 1000 - 200 + 100
+    assert_eq!(client.balance(&bob), 600_i128); // 500 + 200 - 100
 }
