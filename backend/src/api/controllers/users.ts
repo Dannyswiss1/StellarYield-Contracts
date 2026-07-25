@@ -34,6 +34,41 @@ export async function getUserPortfolio(
   }
 }
 
+export async function getUserPortfolioPnl(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const pnl = await userService.getUserPortfolioPnl(
+      String(req.params["address"]),
+    );
+    res.json(pnl);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserIncomeForecast(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const address = String(req.params["address"]);
+    const monthsParam = req.query["months"];
+    const months =
+      typeof monthsParam === "string" && /^\d+$/.test(monthsParam)
+        ? Math.min(12, Math.max(1, parseInt(monthsParam, 10)))
+        : 6;
+
+    const forecast = await userService.getUserIncomeForecast(address, months);
+    res.json(forecast);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getUserShareHistory(
   req: Request,
   res: Response,

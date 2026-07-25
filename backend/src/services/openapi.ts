@@ -283,6 +283,54 @@ function registerPaths(): void {
 
   registry.registerPath({
     method: "get",
+    path: "/api/v1/vaults/{contractId}/fees",
+    summary: "Get operator fee summary per vault",
+    tags: ["Vaults"],
+    parameters: [{ name: "contractId", in: "path", required: true, schema: { type: "string" } }],
+    responses: {
+      200: {
+        description: "Vault fee summary",
+        content: {
+          "application/json": {
+            schema: z.object({
+              totalOperatorFees: z.string(),
+              epochCount: z.number(),
+              averageFeePerEpoch: z.string(),
+              feeBps: z.number(),
+              earlyRedemptionFeeRevenue: z.string(),
+            }),
+          },
+        },
+      },
+      404: { description: "Vault not found", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/vaults/{contractId}/fees/cooperator",
+    summary: "Get cooperator fee breakdown per vault",
+    tags: ["Vaults"],
+    parameters: [{ name: "contractId", in: "path", required: true, schema: { type: "string" } }],
+    responses: {
+      200: {
+        description: "Cooperator fee breakdown",
+        content: {
+          "application/json": {
+            schema: z.object({
+              cooperatorAddress: z.string(),
+              cooperatorFeeBps: z.number(),
+              totalCooperatorFees: z.string(),
+            }),
+          },
+        },
+      },
+      404: { description: "Vault not found", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
     path: "/api/v1/users/{address}",
     summary: "Get user by address",
     tags: ["Users"],
@@ -349,6 +397,28 @@ function registerPaths(): void {
     tags: ["Admin"],
     responses: {
       200: { description: "Admin statistics", content: { "application/json": { schema: adminStatsSchema } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/admin/fees",
+    summary: "Get platform-wide fee analytics (requires API key)",
+    tags: ["Admin"],
+    responses: {
+      200: {
+        description: "Platform fee analytics",
+        content: {
+          "application/json": {
+            schema: z.object({
+              totalOperatorFees: z.string(),
+              totalEarlyRedemptionFees: z.string(),
+              totalPlatformRevenue: z.string(),
+              topFeeVaults: z.array(z.object({ contractId: z.string(), totalFees: z.string() })),
+            }),
+          },
+        },
+      },
     },
   });
 

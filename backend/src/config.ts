@@ -103,6 +103,12 @@ const envSchema = z.object({
     .default("30000")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(100)),
+  REQUEST_BODY_LIMIT: z
+    .string()
+    .default("100kb"),
+  INTERNAL_SECRET: z
+    .string()
+    .default(""),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -160,4 +166,6 @@ export const config = {
 
   eventsRetentionDays: parsed.data.EVENTS_RETENTION_DAYS,
   sseHeartbeatMs: parsed.data.SSE_HEARTBEAT_MS,
+  requestBodyLimit: parsed.data.REQUEST_BODY_LIMIT,
+  internalSecret: parsed.data.INTERNAL_SECRET,
 } as const;

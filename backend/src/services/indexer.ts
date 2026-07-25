@@ -7,6 +7,7 @@ import {
   readRwaName,
   readRwaSymbol,
   readRwaDocumentUri,
+  readOperatorFeeBps,
 } from "./stellar.js";
 import { VaultService } from "./vault.js";
 import { UserService } from "./user.js";
@@ -120,11 +121,12 @@ export async function storeIndexedEvent(
   eventType: string,
   ev: any,
   payload: Record<string, unknown>,
+  parsedData?: Record<string, unknown>,
 ): Promise<void> {
   await query(
-    `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [ev.ledger, ev.txHash, contractId, eventType, JSON.stringify(payload)],
+    `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload, parsed_data)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [ev.ledger, ev.txHash, contractId, eventType, JSON.stringify(payload), parsedData ? JSON.stringify(parsedData) : null],
   );
 }
 
@@ -397,8 +399,8 @@ export class Indexer {
 
     const yieldDist = parseYieldDistributedEvent(event);
     if (yieldDist) {
-      await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
-      await this.recordEvent(event, "yield_distributed");
+      const parsedData = await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
+      await this.recordEvent(event, "yield_distributed", parsedData);
       try {
         await this.notificationService?.notify("yield_distributed", yieldDist as any);
       } catch (e) {
@@ -755,14 +757,14 @@ export class Indexer {
   private async handleYieldDistributed(
     contractId: string,
     yieldDist: { epoch: number; amount: bigint; timestamp: bigint },
-  ): Promise<void> {
-    const vaultRow = await query<{ id: number }>(
-      "SELECT id FROM vaults WHERE contract_id = $1",
+  ): Promise<Record<string, unknown> | undefined> {
+    const vaultRow = await query<{ id: number; operator_fee_bps: number }>(
+      "SELECT id, operator_fee_bps FROM vaults WHERE contract_id = $1",
       [contractId],
     );
     if (vaultRow.length === 0) {
       logger.warn({ contractId }, "yield_distributed for unknown vault — skipping epoch record");
-      return;
+      return undefined;
     }
     const vaultId = vaultRow[0].id;
 
@@ -790,10 +792,41 @@ export class Indexer {
       [vaultId, yieldDist.epoch],
     );
 
+    // Compute operator fee breakdown for parsed_data
+    const grossYield = yieldDist.amount;
+    let operatorFeeBps = vaultRow[0].operator_fee_bps ?? 0;
+
+    // Lazily populate operator_fee_bps from chain if still at default (0)
+    if (operatorFeeBps === 0) {
+      try {
+        operatorFeeBps = await readOperatorFeeBps(contractId);
+        if (operatorFeeBps > 0) {
+          await query(
+            `UPDATE vaults SET operator_fee_bps = $1, updated_at = NOW() WHERE id = $2`,
+            [operatorFeeBps, vaultId],
+          );
+        }
+      } catch (err) {
+        logger.warn({ err, contractId }, "Failed to read operator_fee_bps from chain");
+      }
+    }
+
+    const parsedData: Record<string, unknown> | undefined =
+      operatorFeeBps > 0
+        ? {
+            grossYield: grossYield.toString(),
+            operatorFee: (grossYield * BigInt(operatorFeeBps) / 10000n).toString(),
+            netYield:
+              (grossYield - (grossYield * BigInt(operatorFeeBps) / 10000n)).toString(),
+          }
+        : undefined;
+
     logger.info(
-      { contractId, epoch: yieldDist.epoch, amount: yieldDist.amount.toString() },
+      { contractId, epoch: yieldDist.epoch, amount: grossYield.toString() },
       "Processed yield_distributed event",
     );
+
+    return parsedData;
   }
 
   private async handleVaultCreated(
@@ -911,13 +944,47 @@ export class Indexer {
     }
     const vaultId = vaultRow[0].id;
 
-    await query(
-      `UPDATE redemption_requests SET processed = TRUE
-       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE`,
+    // Look up the redemption request to get shares for gross-asset computation
+    const reqRows = await query<{ shares: string }>(
+      `SELECT shares FROM redemption_requests
+       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE
+       LIMIT 1`,
       [vaultId, event.requestId],
     );
+
+    let feeRevenue = 0;
+    let grossAssets = 0;
+
+    if (reqRows.length > 0) {
+      const shares = toBigIntOrZero(reqRows[0].shares);
+
+      const vaultState = await query<{ total_assets: string; total_supply: string }>(
+        "SELECT total_assets::text, total_supply::text FROM vaults WHERE id = $1",
+        [vaultId],
+      );
+
+      if (vaultState.length > 0) {
+        const totalAssets = toBigIntOrZero(vaultState[0].total_assets);
+        const totalSupply = toBigIntOrZero(vaultState[0].total_supply);
+
+        // Compute gross assets at current exchange rate (1:1 when no supply)
+        const gross = totalSupply > 0n
+          ? (shares * totalAssets) / totalSupply
+          : shares;
+
+        grossAssets = Number(gross);
+        feeRevenue = grossAssets - Number(event.netAssets);
+        if (feeRevenue < 0) feeRevenue = 0;
+      }
+    }
+
+    await query(
+      `UPDATE redemption_requests SET processed = TRUE, fee_revenue = $3, gross_assets = $4
+       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE`,
+      [vaultId, event.requestId, feeRevenue, grossAssets],
+    );
     logger.info(
-      { contractId, user: event.user, requestId: event.requestId },
+      { contractId, user: event.user, requestId: event.requestId, feeRevenue },
       "Processed early_redemption_processed event",
     );
   }
@@ -1119,10 +1186,14 @@ export class Indexer {
     logger.info({ contractId, user: ev.user, verified: ev.verified }, "Processed kyc_set event");
   }
 
-  private async recordEvent(event: any, eventType: string): Promise<void> {
+  private async recordEvent(
+    event: any,
+    eventType: string,
+    parsedData?: Record<string, unknown>,
+  ): Promise<void> {
     await query(
-      `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload, parsed_data)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING`,
       [
         event.ledger ?? 0,
@@ -1130,6 +1201,7 @@ export class Indexer {
         event.contractId ?? "",
         eventType,
         JSON.stringify(event),
+        parsedData ? JSON.stringify(parsedData) : null,
       ],
     );
     indexerEventsProcessedTotal.inc();
