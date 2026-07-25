@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { query } from "../../db/index.js";
 import { indexer } from "../../services/indexerSingleton.js";
+import { jobQueue } from "../../services/jobQueue.js";
 import { logger } from "../../logger.js";
 import { z } from "zod";
 
@@ -398,6 +399,48 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
       topFeeVaults: topFeeVaults.map((v) => ({
         contractId: v.contract_id,
         totalFees: v.total_fees,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getJobStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    const jobId = req.params["jobId"] as string;
+
+    const job = await jobQueue.getJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: "NotFound", message: "Job not found" });
+      return;
+    }
+
+    res.json({
+      id: job.id,
+      name: job.name,
+      state: job.state,
+      createdAt: job.createdOn,
+      completedOn: job.completedOn,
+      output: job.output,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getFailedJobs(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const jobs = await jobQueue.getFailedJobs(50);
+
+    res.json({
+      data: jobs.map((job) => ({
+        id: job.id,
+        name: job.name,
+        payload: job.data,
+        createdAt: job.createdOn,
+        completedAt: job.completedOn,
+        output: job.output,
       })),
     });
   } catch (err) {
