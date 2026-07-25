@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { query } from "../../db/index.js";
 import { indexer } from "../../services/indexerSingleton.js";
+import { jobQueue } from "../../services/jobQueue.js";
 import { logger } from "../../logger.js";
 import { z } from "zod";
 
@@ -64,12 +65,10 @@ export async function backfillIndexer(req: Request, res: Response, next: NextFun
       return;
     }
 
-    // Queue the backfill asynchronously (non-blocking)
     indexer.queueBackfill(fromLedger, toLedger).catch((err) => {
       logger.error({ err }, "Backfill error");
     });
 
-    // Return 202 Accepted immediately
     res.status(202).json({ queued: true, fromLedger, toLedger });
   } catch (err) {
     next(err);
@@ -346,21 +345,8 @@ export async function getDbStats(_req: Request, res: Response, next: NextFunctio
   }
 }
 
-/**
- * GET /api/v1/admin/fees
- *
- * Returns platform-wide fee analytics:
- *   { totalOperatorFees, totalEarlyRedemptionFees, totalPlatformRevenue,
- *     topFeeVaults }
- *
- * topFeeVaults = top 5 vaults by total operator fees.
- * totalPlatformRevenue = totalOperatorFees + totalEarlyRedemptionFees.
- *
- * Issue #789
- */
 export async function getAdminFees(_req: Request, res: Response, next: NextFunction) {
   try {
-    // Total operator fees across all vaults from parsed_data
     const operatorFeeRows = await query<{ total: string }>(
       `SELECT COALESCE(SUM((parsed_data->>'operatorFee')::numeric), 0)::text AS total
        FROM indexed_events
@@ -368,7 +354,6 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
     );
     const totalOperatorFees = operatorFeeRows[0]?.total ?? "0";
 
-    // Total early redemption fees from redemption_requests
     const redemptionFeeRows = await query<{ total: string }>(
       `SELECT COALESCE(SUM(fee_revenue), 0)::text AS total
        FROM redemption_requests
@@ -380,7 +365,6 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
     const totalRedemptionBig = BigInt(Math.round(parseFloat(totalEarlyRedemptionFees)));
     const totalPlatformRevenue = (totalOperatorBig + totalRedemptionBig).toString();
 
-    // Top 5 vaults by total operator fees
     const topFeeVaults = await query<{ contract_id: string; total_fees: string }>(
       `SELECT
          ie.contract_id,
@@ -406,11 +390,6 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
   }
 }
 
-/**
- * POST /api/v1/admin/users/:address/aml-flag
- *
- * Sets aml_flagged = true on a user record. Admin only. (#798)
- */
 export async function flagUserAml(req: Request, res: Response, next: NextFunction) {
   try {
     const parsed = stellarAddressSchema.safeParse(req.params["address"]);
@@ -441,11 +420,6 @@ export async function flagUserAml(req: Request, res: Response, next: NextFunctio
   }
 }
 
-/**
- * POST /api/v1/admin/users/:address/aml-clear
- *
- * Sets aml_flagged = false on a user record. Admin only. (#798)
- */
 export async function clearUserAml(req: Request, res: Response, next: NextFunction) {
   try {
     const parsed = stellarAddressSchema.safeParse(req.params["address"]);
@@ -476,11 +450,6 @@ export async function clearUserAml(req: Request, res: Response, next: NextFuncti
   }
 }
 
-/**
- * GET /api/v1/admin/compliance/flagged-users
- *
- * Returns all users where aml_flagged = true. Admin only. (#799)
- */
 export async function getFlaggedUsers(_req: Request, res: Response, next: NextFunction) {
   try {
     const rows = await query<{
@@ -514,12 +483,6 @@ export async function getFlaggedUsers(_req: Request, res: Response, next: NextFu
   }
 }
 
-/**
- * GET /api/v1/admin/compliance/positions-snapshot
- *
- * Returns all user vault positions as of a given timestamp using
- * share_balance_snapshots. Supports contractId filter and CSV output. (#800)
- */
 export async function getPositionsSnapshot(req: Request, res: Response, next: NextFunction) {
   try {
     const asOfParam = req.query["asOf"] as string | undefined;
@@ -590,6 +553,48 @@ export async function getPositionsSnapshot(req: Request, res: Response, next: Ne
         recordedAt: r.recorded_at,
       })),
     );
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getJobStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    const jobId = req.params["jobId"] as string;
+
+    const job = await jobQueue.getJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: "NotFound", message: "Job not found" });
+      return;
+    }
+
+    res.json({
+      id: job.id,
+      name: job.name,
+      state: job.state,
+      createdAt: job.createdOn,
+      completedOn: job.completedOn,
+      output: job.output,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getFailedJobs(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const jobs = await jobQueue.getFailedJobs(50);
+
+    res.json({
+      data: jobs.map((job) => ({
+        id: job.id,
+        name: job.name,
+        payload: job.data,
+        createdAt: job.createdOn,
+        completedAt: job.completedOn,
+        output: job.output,
+      })),
+    });
   } catch (err) {
     next(err);
   }

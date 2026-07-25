@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getAdminStats, getAdminIndexer, getAdminEvents, getVaultAudit, backfillIndexer, deleteApiKey, getApiKeys, getWebhookDeliveries, getArchivedVaults, getTotalSupplyConsistency, getDbStats, getAdminFees } from "../controllers/admin.js";
+import { getAdminStats, getAdminIndexer, getAdminEvents, getVaultAudit, backfillIndexer, deleteApiKey, getApiKeys, getWebhookDeliveries, getArchivedVaults, getTotalSupplyConsistency, getDbStats, getAdminFees, getJobStatus, getFailedJobs, flagUserAml, clearUserAml, getFlaggedUsers, getPositionsSnapshot } from "../controllers/admin.js";
 import { requireApiKey } from "../middleware/auth.js";
 
 export const adminRouter = Router();
@@ -23,3 +23,6 @@ adminRouter.post("/users/:address/aml-flag", flagUserAml);
 adminRouter.post("/users/:address/aml-clear", clearUserAml);
 adminRouter.get("/compliance/flagged-users", getFlaggedUsers);
 adminRouter.get("/compliance/positions-snapshot", getPositionsSnapshot);
+
+adminRouter.get("/jobs/failed", getFailedJobs);
+adminRouter.get("/jobs/:jobId", getJobStatus);

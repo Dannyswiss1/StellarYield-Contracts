@@ -3,6 +3,7 @@ import { lookup } from "dns/promises";
 import { query } from "../db/index.js";
 import { logger } from "../logger.js";
 import { sseService } from "./sse.js";
+import { jobQueue } from "./jobQueue.js";
 
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
@@ -10,9 +11,6 @@ const BLOCKED_HOSTNAMES = new Set([
   "169.254.169.254",
   "100.100.100.200",
 ]);
-
-/** Number of consecutive delivery failures that trigger auto-deactivation (#667). */
-const MAX_CONSECUTIVE_FAILURES = 10;
 
 function isPrivateIp(ip: string): boolean {
   const v4 = [
@@ -73,65 +71,11 @@ export class NotificationService {
 
     const payload = JSON.stringify({ event, data, timestamp: new Date().toISOString() });
 
-    const results = await Promise.allSettled(
-      webhooks.map((webhook) => this.deliver(webhook, payload)),
+    await Promise.allSettled(
+      webhooks.map((webhook) =>
+        jobQueue.send("webhook-deliver", { webhookId: webhook.id, payload }),
+      ),
     );
-
-    for (let i = 0; i < webhooks.length; i++) {
-      const webhook = webhooks[i];
-      const result = results[i];
-      const failed =
-        result.status === "rejected" ||
-        (result.status === "fulfilled" && !result.value.success);
-
-      const deliveryMetrics =
-        result.status === "fulfilled"
-          ? result.value
-          : { success: false, statusCode: null, durationMs: 0 };
-
-      sseService.broadcastWebhookDelivery(webhook.id, {
-        type: "delivery",
-        attempt: 1,
-        statusCode: deliveryMetrics.statusCode,
-        durationMs: deliveryMetrics.durationMs,
-        success: deliveryMetrics.success,
-      });
-
-      if (failed) {
-        const newFailures = (webhook.consecutive_failures ?? 0) + 1;
-        if (newFailures >= MAX_CONSECUTIVE_FAILURES) {
-          await query(
-            `UPDATE webhooks SET consecutive_failures = $1, active = FALSE WHERE id = $2`,
-            [newFailures, webhook.id],
-          );
-          logger.warn(
-            { webhookId: webhook.id, consecutiveFailures: newFailures },
-            "Webhook auto-deactivated after reaching consecutive failure threshold",
-          );
-        } else {
-          await query(
-            `UPDATE webhooks SET consecutive_failures = $1 WHERE id = $2`,
-            [newFailures, webhook.id],
-          );
-        }
-
-        await query(
-          `INSERT INTO webhook_deliveries (webhook_id, payload, attempt, next_retry_at, last_error)
-           VALUES ($1, $2, 1, NOW() + INTERVAL '5 seconds', $3)`,
-          [
-            webhook.id,
-            payload,
-            result.status === "rejected"
-              ? String((result as PromiseRejectedResult).reason)
-              : "non-2xx response",
-          ],
-        );
-      } else {
-        if ((webhook.consecutive_failures ?? 0) > 0) {
-          await query(`UPDATE webhooks SET consecutive_failures = 0 WHERE id = $1`, [webhook.id]);
-        }
-      }
-    }
   }
 
   /**
@@ -315,7 +259,6 @@ export class NotificationService {
       return { success: true, statusCode: response.status, durationMs };
     } catch (err) {
       logger.warn({ webhookId: webhook.id, url: webhook.url, err }, "Webhook delivery failed");
-      const durationMs = Date.now() - start;
       throw err;
     }
   }
