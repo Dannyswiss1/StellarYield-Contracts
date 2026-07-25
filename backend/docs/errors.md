@@ -1,0 +1,61 @@
+# API Error Codes
+
+All API error responses include a `code` field for programmatic error handling.
+
+## Error Response Format
+
+```json
+{
+  "code": "ERROR_CODE",
+  "message": "Human-readable error description",
+  "statusCode": 404
+}
+```
+
+## Error Codes
+
+### VAULT_NOT_FOUND (404)
+The requested vault contract ID does not exist in the database.
+
+**Example:** `GET /api/v1/vaults/UNKNOWN_ID`
+
+### USER_NOT_FOUND (404)
+The requested user address does not exist in the database.
+
+**Example:** `GET /api/v1/users/GUNKNOWN...`
+
+### VALIDATION_ERROR (400)
+Request validation failed (invalid parameters, missing required fields, etc).
+
+### UNAUTHORIZED (401)
+Authentication required but not provided or invalid.
+
+### RATE_LIMITED (429)
+Too many requests. Rate limit exceeded for this endpoint.
+
+### RPC_ERROR (500)
+Failed to communicate with the Stellar blockchain RPC node.
+
+### WEBHOOK_INVALID (400)
+Webhook payload validation failed or signature mismatch.
+
+### NOT_FOUND (404)
+Generic not found error for resources.
+
+### INTERNAL_SERVER_ERROR (500)
+An unexpected server error occurred.
+
+## Usage in Client Code
+
+```typescript
+try {
+  const vault = await fetch('/api/v1/vaults/CAB...');
+  const data = await vault.json();
+} catch (err) {
+  if (err.code === 'VAULT_NOT_FOUND') {
+    // Handle vault not found
+  } else if (err.code === 'RATE_LIMITED') {
+    // Implement backoff/retry
+  }
+}
+```

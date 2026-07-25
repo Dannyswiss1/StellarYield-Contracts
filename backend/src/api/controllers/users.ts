@@ -9,8 +9,7 @@ export async function getUser(req: Request, res: Response, next: NextFunction) {
   try {
     const user = await userService.getUser(String(req.params["address"]));
     if (!user) {
-      res.status(404).json({ error: "NotFound", message: "User not found" });
-      return;
+      throw new AppError(ErrorCode.USER_NOT_FOUND, "User not found", 404);
     }
     res.json(user);
   } catch (err) {

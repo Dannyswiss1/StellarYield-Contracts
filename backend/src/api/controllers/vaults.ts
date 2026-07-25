@@ -86,8 +86,7 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   try {
     const vault = await vaultService.getVault(String(req.params["contractId"]));
     if (!vault) {
-      res.status(404).json({ error: "NotFound", message: "Vault not found" });
-      return;
+      throw new AppError(ErrorCode.VAULT_NOT_FOUND, "Vault not found", 404);
     }
     const etag = `W/"${createHash("sha1").update(JSON.stringify(vault)).digest("hex")}"`;
     if (req.headers["if-none-match"] === etag) {
@@ -111,7 +110,7 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   }
 }
 
-export async function getVaultLiveState(req: Request, res: Response) {
+export async function getVaultLiveState(req: Request, res: Response, next: NextFunction) {
   try {
     const contractId = String(req.params["contractId"]);
     const state = await readVaultState(contractId);
@@ -125,7 +124,7 @@ export async function getVaultLiveState(req: Request, res: Response) {
   }
 }
 
-export async function getVaultLiveTotalAssets(req: Request, res: Response) {
+export async function getVaultLiveTotalAssets(req: Request, res: Response, next: NextFunction) {
   try {
     const totalAssets = await readTotalAssets(String(req.params["contractId"]));
     res.json({ totalAssets: totalAssets.toString() });

@@ -11,6 +11,7 @@ import {
   getUserYieldHistory,
   getUserYieldSummary,
   searchUsers,
+  streamUserPositions,
 } from "../controllers/users.js";
 import {
   validateBody,
@@ -107,4 +108,9 @@ usersRouter.get(
   "/:address/portfolio",
   validateParams(addressParamSchema),
   getUserPortfolio,
+);
+usersRouter.get(
+  "/:address/stream",
+  validateParams(addressParamSchema),
+  streamUserPositions,
 );
