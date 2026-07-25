@@ -98,6 +98,11 @@ const envSchema = z.object({
     .default("90")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(1)),
+  SSE_HEARTBEAT_MS: z
+    .string()
+    .default("30000")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(100)),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -154,4 +159,5 @@ export const config = {
   },
 
   eventsRetentionDays: parsed.data.EVENTS_RETENTION_DAYS,
+  sseHeartbeatMs: parsed.data.SSE_HEARTBEAT_MS,
 } as const;
