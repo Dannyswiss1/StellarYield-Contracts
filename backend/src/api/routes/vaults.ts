@@ -29,6 +29,8 @@ import {
   getMaturingSoonVaults,
   getFullyFundedVaults,
   getSimilarVaults,
+  getVaultFees,
+  getCooperatorFees,
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
 import { requireApiKey } from "../middleware/auth.js";
@@ -126,6 +128,10 @@ vaultsRouter.get(
   validateParams(vaultParamsSchema),
   getEarlyRedemptionFee,
 );
+// Operator fee summary per vault: GET /api/v1/vaults/:contractId/fees
+vaultsRouter.get("/:contractId/fees", validateParams(vaultParamsSchema), getVaultFees);
+// Cooperator fee breakdown: GET /api/v1/vaults/:contractId/fees/cooperator
+vaultsRouter.get("/:contractId/fees/cooperator", validateParams(vaultParamsSchema), getCooperatorFees);
 // Export vault data as CSV: GET /api/v1/vaults/:contractId/export.csv
 vaultsRouter.get("/:contractId/export.csv", validateParams(vaultParamsSchema), exportVaultCsv);
 // Operators list: GET /api/v1/vaults/:contractId/operators
