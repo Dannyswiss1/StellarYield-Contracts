@@ -4,6 +4,7 @@ import { z } from "zod";
 import { VaultService } from "../../services/vault.js";
 import { readTotalAssets, readVaultState, readPaused } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
+import { sseManager } from "../../services/sseManager.js";
 
 const vaultService = new VaultService();
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
@@ -1066,3 +1067,31 @@ export async function getSimilarVaults(req: Request, res: Response, next: NextFu
     next(err);
   }
 }
+
+/**
+ * GET /api/v1/vaults/stream?contractIds=CA...1,CA...2
+ *
+ * SSE stream endpoint for real-time vault events (#758, #759, #760).
+ * Validates each contract ID in query param contractIds as a Stellar C-address.
+ * Returns 400 Bad Request if any ID is invalid before stream opens.
+ */
+export function streamVaultEvents(req: Request, res: Response): void {
+  const { contractIds } = req.query;
+  let contractIdSet: Set<string> | undefined;
+
+  if (typeof contractIds === "string" && contractIds.trim().length > 0) {
+    const rawIds = contractIds.split(",").map((id) => id.trim()).filter(Boolean);
+    const contractAddressRegex = /^C[A-Z2-7]{55}$/;
+
+    for (const id of rawIds) {
+      if (!contractAddressRegex.test(id)) {
+        res.status(400).json({ error: "Bad Request", message: `Invalid contract ID format: ${id}` });
+        return;
+      }
+    }
+    contractIdSet = new Set(rawIds);
+  }
+
+  sseManager.addVaultClient(req, res, contractIdSet);
+}
+
