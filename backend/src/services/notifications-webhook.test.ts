@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHmac } from "crypto";
 import { NotificationService } from "./notifications.js";
 
 // Mock the db query function
@@ -26,7 +27,6 @@ describe("NotificationService.verifySignature (#664)", () => {
     const secret = "my-secret";
     const payload = '{"event":"test"}';
     // Compute expected signature manually
-    const { createHmac } = require("crypto");
     const expected = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
     expect(svc.verifySignature(payload, expected, secret)).toBe(true);
   });
@@ -35,14 +35,12 @@ describe("NotificationService.verifySignature (#664)", () => {
     const secret = "my-secret";
     const originalPayload = '{"event":"test"}';
     const tamperedPayload = '{"event":"tampered"}';
-    const { createHmac } = require("crypto");
     const sig = `sha256=${createHmac("sha256", secret).update(originalPayload).digest("hex")}`;
     expect(svc.verifySignature(tamperedPayload, sig, secret)).toBe(false);
   });
 
   it("returns false for a wrong secret", () => {
     const payload = '{"event":"test"}';
-    const { createHmac } = require("crypto");
     const sig = `sha256=${createHmac("sha256", "correct-secret").update(payload).digest("hex")}`;
     expect(svc.verifySignature(payload, sig, "wrong-secret")).toBe(false);
   });

@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../db/index.js", () => ({ query: vi.fn() }));
 vi.mock("../logger.js", () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
+// Avoid real network DNS lookups (slow/flaky in CI) during the SSRF check in validateWebhookUrl.
+vi.mock("dns/promises", () => ({ lookup: vi.fn() }));
 
 async function getTestContext() {
   const { query } = await import("../db/index.js");
@@ -15,8 +17,10 @@ async function getTestContext() {
 }
 
 describe("NotificationService", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    const { lookup } = await import("dns/promises");
+    (lookup as ReturnType<typeof vi.fn>).mockResolvedValue([{ address: "203.0.113.10" }]);
   });
 
   afterEach(() => {

@@ -2,13 +2,17 @@
 
 #[cfg(test)]
 mod tests {
+    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::Ledger as _;
 
-    use crate::errors::Error;
     use crate::test_helpers::{advance_time, mint_usdc, setup_with_kyc_bypass};
+
+    /// Must deposit >= the vault's funding_target (100 USDC) before activate_vault will succeed.
+    const FUNDING_TARGET: i128 = 100_000_000;
 
     /// Deposit and immediately try to transfer — should fail if lock-up > 0.
     #[test]
+    #[should_panic(expected = "Error(Contract, #11)")]
     fn transfer_blocked_during_lockup() {
         let ctx = setup_with_kyc_bypass();
         let vault = ctx.vault();
@@ -16,22 +20,20 @@ mod tests {
         // Configure a 3600-second (1 hour) lock-up via admin.
         vault.set_lock_up_period(&ctx.admin, &3600u64);
 
-        // Activate vault so transfers are permitted by state guard.
-        vault.activate_vault(&ctx.operator);
+        // Advance past the default (zero) ledger timestamp so the deposit
+        // timestamp isn't mistaken for "no deposit recorded".
+        advance_time(&ctx.env, 1);
 
         let user2 = soroban_sdk::Address::generate(&ctx.env);
 
-        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, 10_000_000);
-        vault.deposit(&ctx.user, &10_000_000i128, &ctx.user);
+        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, FUNDING_TARGET);
+        vault.deposit(&ctx.user, &FUNDING_TARGET, &ctx.user);
 
-        // Transfer immediately — should panic with SharesLocked.
-        let result = ctx.env.try_invoke_contract::<(), _>(
-            &ctx.vault_id,
-            &soroban_sdk::symbol_short!("transfer"),
-            (ctx.user.clone(), user2.clone(), 1_000_000i128).into_val(&ctx.env),
-        );
-        // Expect an error (SharesLocked)
-        assert!(result.is_err(), "transfer should fail during lock-up");
+        // Activate vault so transfers are permitted by state guard.
+        vault.activate_vault(&ctx.operator);
+
+        // Transfer immediately — should panic (lock-up not yet elapsed).
+        vault.transfer(&ctx.user, &user2, &1_000_000i128);
     }
 
     /// After lock-up elapses the transfer should succeed.
@@ -40,12 +42,16 @@ mod tests {
         let ctx = setup_with_kyc_bypass();
         let vault = ctx.vault();
         vault.set_lock_up_period(&ctx.admin, &3600u64);
-        vault.activate_vault(&ctx.operator);
+
+        // Advance past the default (zero) ledger timestamp so the deposit
+        // timestamp isn't mistaken for "no deposit recorded".
+        advance_time(&ctx.env, 1);
 
         let user2 = soroban_sdk::Address::generate(&ctx.env);
 
-        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, 10_000_000);
-        vault.deposit(&ctx.user, &10_000_000i128, &ctx.user);
+        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, FUNDING_TARGET);
+        vault.deposit(&ctx.user, &FUNDING_TARGET, &ctx.user);
+        vault.activate_vault(&ctx.operator);
 
         // Advance time past the lock-up.
         advance_time(&ctx.env, 3601);
@@ -62,8 +68,12 @@ mod tests {
         let vault = ctx.vault();
         vault.set_lock_up_period(&ctx.admin, &3600u64);
 
-        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, 10_000_000);
-        vault.deposit(&ctx.user, &10_000_000i128, &ctx.user);
+        // Advance past the default (zero) ledger timestamp so the deposit
+        // timestamp isn't mistaken for "no deposit recorded".
+        advance_time(&ctx.env, 1);
+
+        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, FUNDING_TARGET);
+        vault.deposit(&ctx.user, &FUNDING_TARGET, &ctx.user);
 
         // Right after deposit, remaining should be close to 3600.
         let remaining = vault.lock_up_remaining(&ctx.user);
@@ -87,8 +97,8 @@ mod tests {
         vault.set_lock_up_period(&ctx.admin, &999_999u64);
 
         // Deposit in Funding, activate, then set mature state.
-        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, 10_000_000);
-        vault.deposit(&ctx.user, &10_000_000i128, &ctx.user);
+        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, FUNDING_TARGET);
+        vault.deposit(&ctx.user, &FUNDING_TARGET, &ctx.user);
         vault.activate_vault(&ctx.operator);
 
         // Jump to past maturity date.
@@ -99,7 +109,7 @@ mod tests {
 
         // redeem_at_maturity should succeed even with active lock-up.
         let shares = vault.balance(&ctx.user);
-        vault.redeem_at_maturity(&ctx.user, &ctx.user, &shares);
+        vault.redeem_at_maturity(&ctx.user, &shares, &ctx.user, &ctx.user);
     }
 
     /// Zero lock-up period means transfers are always allowed.
@@ -109,11 +119,11 @@ mod tests {
         let vault = ctx.vault();
         // lock_up_period defaults to 0.
 
-        vault.activate_vault(&ctx.operator);
         let user2 = soroban_sdk::Address::generate(&ctx.env);
 
-        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, 10_000_000);
-        vault.deposit(&ctx.user, &10_000_000i128, &ctx.user);
+        mint_usdc(&ctx.env, &ctx.asset_id, &ctx.user, FUNDING_TARGET);
+        vault.deposit(&ctx.user, &FUNDING_TARGET, &ctx.user);
+        vault.activate_vault(&ctx.operator);
 
         vault.transfer(&ctx.user, &user2, &1_000_000i128);
         assert_eq!(vault.balance(&user2), 1_000_000i128);

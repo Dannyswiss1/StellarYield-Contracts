@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import supertest from "supertest";
-import { createHash } from "crypto";
 
 vi.mock("../../db/index.js", () => ({ query: vi.fn() }));
 vi.mock("../../services/indexerSingleton.js", () => ({
@@ -34,14 +33,144 @@ async function getApp() {
   return createApp();
 }
 
-/** Hash an API key the same way the auth middleware does */
-function hashKey(plaintext: string): string {
-  return createHash("sha256").update(plaintext).digest("hex");
-}
-
 describe("Admin Controller", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("returns per-vault fee metrics ordered by total fees and applies date filters", async () => {
+    const { query } = await import("../../db/index.js");
+    const { getAdminFeesDashboard } = await import("./admin.js");
+    const mockQuery = query as ReturnType<typeof vi.fn>;
+
+    mockQuery.mockResolvedValueOnce([
+      {
+        contract_id: "C1",
+        name: "Alpha Vault",
+        total_operator_fees: "2200",
+        epoch_count: "4",
+        fee_bps: 120,
+        last_epoch_fee: "200",
+      },
+      {
+        contract_id: "C2",
+        name: "Beta Vault",
+        total_operator_fees: "1500",
+        epoch_count: "2",
+        fee_bps: 80,
+        last_epoch_fee: "100",
+      },
+    ]);
+
+    const req = { query: { from: "2025-01-01", to: "2025-01-31" } } as any;
+    const res = { json: vi.fn() } as any;
+    const next = vi.fn();
+
+    await getAdminFeesDashboard(req, res, next);
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("ORDER BY"),
+      expect.arrayContaining([expect.any(String), expect.any(String)]),
+    );
+    expect(res.json).toHaveBeenCalledWith([
+      {
+        contractId: "C1",
+        name: "Alpha Vault",
+        totalOperatorFees: "2200",
+        epochCount: 4,
+        feeBps: 120,
+        lastEpochFee: "200",
+      },
+      {
+        contractId: "C2",
+        name: "Beta Vault",
+        totalOperatorFees: "1500",
+        epochCount: 2,
+        feeBps: 80,
+        lastEpochFee: "100",
+      },
+    ]);
+  });
+
+  it("deletes a user and returns a redaction receipt", async () => {
+    const { query } = await import("../../db/index.js");
+    const { deleteUser } = await import("./admin.js");
+    const mockQuery = query as ReturnType<typeof vi.fn>;
+
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id FROM users")) {
+        return Promise.resolve([{ id: 1 }]);
+      }
+      if (sql.includes("UPDATE user_vault_positions")) {
+        return Promise.resolve([{ id: 10 }]);
+      }
+      if (sql.includes("UPDATE share_balance_snapshots")) {
+        return Promise.resolve([{ id: 20 }, { id: 21 }]);
+      }
+      if (sql.includes("UPDATE redemption_requests")) {
+        return Promise.resolve([]);
+      }
+      if (sql.includes("UPDATE indexed_events")) {
+        return Promise.resolve([]);
+      }
+      if (sql.includes("DELETE FROM users")) {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const req = { params: { address: "GABCDEF" }, headers: {}, body: undefined } as any;
+    const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+    const next = vi.fn();
+
+    await deleteUser(req, res, next);
+
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining("DELETE FROM users"), ["GABCDEF"]);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE indexed_events SET payload = jsonb_set(payload, '{user}'"),
+      ["GABCDEF"],
+    );
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE indexed_events SET payload = jsonb_set(payload, '{address}'"),
+      ["GABCDEF"],
+    );
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      address: "GABCDEF",
+      deletedAt: expect.any(String),
+      recordsAffected: 3,
+    }));
+  });
+
+  it("returns paginated audit log entries ordered by creation time", async () => {
+    const { query } = await import("../../db/index.js");
+    const { getAdminAuditLog } = await import("./admin.js");
+    const mockQuery = query as ReturnType<typeof vi.fn>;
+
+    mockQuery.mockResolvedValueOnce([{ count: "1" }]);
+    mockQuery.mockResolvedValueOnce([
+      {
+        id: 1,
+        api_key_label: "ops",
+        action: "delete_api_key",
+        target: "/api/v1/admin/api-keys/1",
+        ip_address: "203.0.113.10",
+        request_body_hash: "abc123",
+        created_at: new Date("2025-01-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const req = { query: { page: "1", pageSize: "20" } } as any;
+    const res = { json: vi.fn() } as any;
+    const next = vi.fn();
+
+    await getAdminAuditLog(req, res, next);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.any(Array),
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    }));
   });
 
   // ── Unit tests (controller function directly) ─────────────────────────────

@@ -7,8 +7,8 @@ use soroban_sdk::{
 
 use crate::{
     storage::{
-        get_vault_count, get_vault_info, increment_vault_deploy_counter, put_vault_by_deploy_id,
-        put_vault_info, register_vault,
+        get_vault_count, get_vault_info, increment_vault_deploy_counter, push_vaults_by_asset,
+        put_vault_by_deploy_id, put_vault_info, register_vault,
     },
     types::{VaultInfo, VaultType},
     VaultFactory, VaultFactoryClient,
@@ -157,6 +157,9 @@ fn test_get_vault_info_includes_underlying_asset() {
         symbol: String::from_str(&e, "AT"),
         active: true,
         created_at: e.ledger().timestamp(),
+        operator_fee_bps: 0,
+        maturity_date: 0,
+        expected_apy: 0,
     };
 
     e.as_contract(&factory_id, || {
@@ -848,6 +851,9 @@ fn test_mixed_vault_types_registry_filtering() {
         symbol: String::from_str(&e, "AGG"),
         active: true,
         created_at: e.ledger().timestamp(),
+        operator_fee_bps: 0,
+        maturity_date: 0,
+        expected_apy: 0,
     };
     e.as_contract(&factory_id, || {
         put_vault_info(&e, &aggregator_vault, aggregator_info);
@@ -1185,12 +1191,27 @@ fn test_get_vaults_by_asset_returns_only_matching_vaults() {
     };
 
     e.as_contract(&factory_id, || {
-        put_vault_info(&e, &v1, make_info(v1.clone(), asset_a.clone(), "Vault A1", "A1"));
+        put_vault_info(
+            &e,
+            &v1,
+            make_info(v1.clone(), asset_a.clone(), "Vault A1", "A1"),
+        );
         register_vault(&e, v1.clone());
-        put_vault_info(&e, &v2, make_info(v2.clone(), asset_a.clone(), "Vault A2", "A2"));
+        push_vaults_by_asset(&e, &asset_a, v1.clone());
+        put_vault_info(
+            &e,
+            &v2,
+            make_info(v2.clone(), asset_a.clone(), "Vault A2", "A2"),
+        );
         register_vault(&e, v2.clone());
-        put_vault_info(&e, &v3, make_info(v3.clone(), asset_b.clone(), "Vault B1", "B1"));
+        push_vaults_by_asset(&e, &asset_a, v2.clone());
+        put_vault_info(
+            &e,
+            &v3,
+            make_info(v3.clone(), asset_b.clone(), "Vault B1", "B1"),
+        );
         register_vault(&e, v3.clone());
+        push_vaults_by_asset(&e, &asset_b, v3.clone());
     });
 
     // asset_a query must return exactly v1 and v2.
@@ -1198,7 +1219,10 @@ fn test_get_vaults_by_asset_returns_only_matching_vaults() {
     assert_eq!(result.len(), 2, "must return exactly 2 vaults for asset_a");
     assert!(result.contains(v1.clone()), "v1 must be in the result");
     assert!(result.contains(v2.clone()), "v2 must be in the result");
-    assert!(!result.contains(v3.clone()), "v3 (asset_b) must not be in the result");
+    assert!(
+        !result.contains(v3.clone()),
+        "v3 (asset_b) must not be in the result"
+    );
 
     // asset_b query must return only v3.
     let result_b = client.get_vaults_by_asset(&asset_b);
@@ -1246,7 +1270,10 @@ fn test_get_registry_stats_reflects_live_state() {
 
     let stats = client.get_registry_stats();
     assert_eq!(stats.total_vaults, 3, "total must count all vaults");
-    assert_eq!(stats.active_vaults, 2, "active count must match active flag");
+    assert_eq!(
+        stats.active_vaults, 2,
+        "active count must match active flag"
+    );
     assert_eq!(
         stats.latest_vault.unwrap(),
         last,
@@ -1308,7 +1335,11 @@ fn test_vault_exists_by_name_symbol_exact_match_only() {
         &String::from_str(&e, "US T-Bill Vault"),
         &String::from_str(&e, "syUSTB"),
     );
-    assert_eq!(found, Some(vault.clone()), "exact name+symbol must be found");
+    assert_eq!(
+        found,
+        Some(vault.clone()),
+        "exact name+symbol must be found"
+    );
 
     // Right name, wrong symbol — must return None.
     let wrong_symbol = client.vault_exists_by_name_symbol(

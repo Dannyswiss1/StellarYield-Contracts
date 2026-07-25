@@ -2,6 +2,7 @@ import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { query } from "../db/index.js";
+import { userServiceInstance } from "./userSingleton.js";
 import {
   getSorobanRpc,
   readRwaName,

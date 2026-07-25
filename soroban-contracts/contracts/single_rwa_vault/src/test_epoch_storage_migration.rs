@@ -4,8 +4,6 @@
 //! persistent storage with proper TTL management, and that all behavioral
 //! invariants are preserved.
 
-#![cfg(test)]
-
 extern crate std;
 
 use crate::storage::{

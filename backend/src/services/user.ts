@@ -10,6 +10,7 @@ import type {
   IncomeForecastResponse,
   IncomeForecastMonth,
 } from "../types/index.js";
+import { EventEmitter } from "node:events";
 import { query } from "../db/index.js";
 import { YieldService } from "./yield.js";
 

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import {
+  exportUserData,
   getKycBatch,
   getPortfoliosBatch,
   getUser,
@@ -21,6 +22,7 @@ import {
   validateQuery,
   stellarAddressSchema,
 } from "../middleware/validate.js";
+import { requireApiKey } from "../middleware/auth.js";
 
 export const usersRouter = Router();
 
@@ -75,6 +77,12 @@ usersRouter.post(
   "/kyc/batch",
   validateBody(kycBatchBodySchema),
   getKycBatch,
+);
+usersRouter.get(
+  "/:address/data-export",
+  requireApiKey({ role: "admin" }),
+  validateParams(addressParamSchema),
+  exportUserData,
 );
 usersRouter.get(
   "/:address/kyc",

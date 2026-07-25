@@ -800,6 +800,11 @@ impl VaultFactory {
     pub fn default_zkme_verifier(e: &Env) -> Address {
         get_default_zkme_verifier(e)
     }
+    /// Returns the factory-wide default operator fee (in basis points) applied
+    /// to newly deployed vaults that don't specify their own fee.
+    pub fn default_operator_fee_bps(e: &Env) -> u32 {
+        get_default_fee_bps(e)
+    }
     /// Returns the cooperator address currently configured as the factory-wide
     /// default for new vault deployments.
     ///

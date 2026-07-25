@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS vaults (
   total_shares_ever_minted NUMERIC NOT NULL DEFAULT 0,
   total_shares_ever_burned NUMERIC NOT NULL DEFAULT 0,
   early_redemption_fee_bps INT DEFAULT 0,
+  operator_fee_bps INT DEFAULT 0,
   expected_apy    INT,
   maturity_date   TIMESTAMPTZ,
   rwa_category    TEXT,
@@ -96,4 +97,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
   role       TEXT NOT NULL DEFAULT 'admin',
   label      TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id               SERIAL PRIMARY KEY,
+  api_key_label    TEXT,
+  action           TEXT NOT NULL,
+  target           TEXT NOT NULL,
+  ip_address       TEXT,
+  created_at       TIMESTAMPTZ DEFAULT NOW(),
+  request_body_hash TEXT NOT NULL
 );

@@ -271,7 +271,6 @@ describe("VaultService", () => {
   describe("getMaturitySoonVaults", () => {
     it("returns active vaults maturing within the given days with daysUntilMaturity", async () => {
       const createdAt = new Date("2025-01-01T00:00:00.000Z");
-      const maturityDate = new Date("2025-12-31T00:00:00.000Z");
       vi.mocked(db.query).mockResolvedValueOnce([
         {
           id: 1,

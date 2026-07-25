@@ -4,6 +4,7 @@ import { z } from "zod";
 import { VaultService } from "../../services/vault.js";
 import { readTotalAssets, readVaultState, readPaused, readCooperator, readCooperatorFeeBps } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
+import { AppError, ErrorCode } from "../middleware/errors.js";
 
 const vaultService = new VaultService();
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
@@ -117,10 +118,7 @@ export async function getVaultLiveState(req: Request, res: Response, next: NextF
     const paused = await readPaused(contractId);
     res.json({ state, paused });
   } catch (_err) {
-    res.status(500).json({
-      error: "RpcError",
-      message: "Failed to read live vault state from chain",
-    });
+    next(new AppError(ErrorCode.RPC_ERROR, "Failed to read live vault state from chain", 500));
   }
 }
 
@@ -129,10 +127,7 @@ export async function getVaultLiveTotalAssets(req: Request, res: Response, next:
     const totalAssets = await readTotalAssets(String(req.params["contractId"]));
     res.json({ totalAssets: totalAssets.toString() });
   } catch (_err) {
-    res.status(500).json({
-      error: "RpcError",
-      message: "Failed to read live total assets from chain",
-    });
+    next(new AppError(ErrorCode.RPC_ERROR, "Failed to read live total assets from chain", 500));
   }
 }
 

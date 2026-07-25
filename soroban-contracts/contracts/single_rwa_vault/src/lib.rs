@@ -2844,11 +2844,7 @@ impl SingleRWAVault {
         }
         let now = e.ledger().timestamp();
         let unlock_at = deposit_ts + period;
-        if now >= unlock_at {
-            0
-        } else {
-            unlock_at - now
-        }
+        unlock_at.saturating_sub(now)
     }
 
     // ─────────────────────────────────────────────────────────────────
