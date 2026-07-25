@@ -15,6 +15,13 @@ import {
   getAdminFeesDashboard,
   deleteUser,
   getAdminAuditLog,
+  getJobStatus,
+  getFailedJobs,
+  flagUserAml,
+  clearUserAml,
+  getFlaggedUsers,
+  getPositionsSnapshot,
+  streamIndexerProgress,
 } from "../controllers/admin.js";
 import { requireApiKey } from "../middleware/auth.js";
 
@@ -24,6 +31,7 @@ adminRouter.use(requireApiKey({ minRole: "readonly" }));
 
 adminRouter.get("/stats", getAdminStats);
 adminRouter.get("/indexer", getAdminIndexer);
+adminRouter.get("/indexer/stream", streamIndexerProgress);
 adminRouter.post("/indexer/backfill", requireApiKey({ role: "admin" }), backfillIndexer);
 adminRouter.get("/events", getAdminEvents);
 adminRouter.get("/vaults/:contractId/audit", getVaultAudit);
@@ -37,3 +45,11 @@ adminRouter.get("/fees", getAdminFees);
 adminRouter.get("/fees/dashboard", requireApiKey({ role: "admin" }), getAdminFeesDashboard);
 adminRouter.delete("/users/:address", requireApiKey({ role: "admin" }), deleteUser);
 adminRouter.get("/audit-log", requireApiKey({ role: "admin" }), getAdminAuditLog);
+
+adminRouter.post("/users/:address/aml-flag", flagUserAml);
+adminRouter.post("/users/:address/aml-clear", clearUserAml);
+adminRouter.get("/compliance/flagged-users", getFlaggedUsers);
+adminRouter.get("/compliance/positions-snapshot", getPositionsSnapshot);
+
+adminRouter.get("/jobs/failed", getFailedJobs);
+adminRouter.get("/jobs/:jobId", getJobStatus);

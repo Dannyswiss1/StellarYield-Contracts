@@ -2,9 +2,12 @@ import { createHash } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { query } from "../../db/index.js";
 import { indexer } from "../../services/indexerSingleton.js";
+import { jobQueue } from "../../services/jobQueue.js";
+import { sseManager } from "../../services/sseManager.js";
 import { logger } from "../../logger.js";
 import { z } from "zod";
 
+const stellarAddressSchema = z.string().length(56).regex(/^G[A-Z2-7]{55}$/);
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
 
 function getClientIp(req: Request): string | null {
@@ -99,7 +102,6 @@ export async function backfillIndexer(req: Request, res: Response, next: NextFun
       logger.error({ err }, "Backfill error");
     });
 
-    // Return 202 Accepted immediately
     res.status(202).json({ queued: true, fromLedger, toLedger });
   } catch (err) {
     next(err);
@@ -571,21 +573,8 @@ export async function getDbStats(_req: Request, res: Response, next: NextFunctio
   }
 }
 
-/**
- * GET /api/v1/admin/fees
- *
- * Returns platform-wide fee analytics:
- *   { totalOperatorFees, totalEarlyRedemptionFees, totalPlatformRevenue,
- *     topFeeVaults }
- *
- * topFeeVaults = top 5 vaults by total operator fees.
- * totalPlatformRevenue = totalOperatorFees + totalEarlyRedemptionFees.
- *
- * Issue #789
- */
 export async function getAdminFees(_req: Request, res: Response, next: NextFunction) {
   try {
-    // Total operator fees across all vaults from parsed_data
     const operatorFeeRows = await query<{ total: string }>(
       `SELECT COALESCE(SUM((parsed_data->>'operatorFee')::numeric), 0)::text AS total
        FROM indexed_events
@@ -593,7 +582,6 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
     );
     const totalOperatorFees = operatorFeeRows[0]?.total ?? "0";
 
-    // Total early redemption fees from redemption_requests
     const redemptionFeeRows = await query<{ total: string }>(
       `SELECT COALESCE(SUM(fee_revenue), 0)::text AS total
        FROM redemption_requests
@@ -605,7 +593,6 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
     const totalRedemptionBig = BigInt(Math.round(parseFloat(totalEarlyRedemptionFees)));
     const totalPlatformRevenue = (totalOperatorBig + totalRedemptionBig).toString();
 
-    // Top 5 vaults by total operator fees
     const topFeeVaults = await query<{ contract_id: string; total_fees: string }>(
       `SELECT
          ie.contract_id,
@@ -629,4 +616,219 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
   } catch (err) {
     next(err);
   }
+}
+
+export async function flagUserAml(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = stellarAddressSchema.safeParse(req.params["address"]);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid address format" });
+      return;
+    }
+    const address = parsed.data;
+
+    const rows = await query<{ id: number }>(
+      "SELECT id FROM users WHERE address = $1",
+      [address],
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "User not found" });
+      return;
+    }
+
+    await query(
+      `UPDATE users SET aml_flagged = TRUE, aml_flagged_at = NOW(), updated_at = NOW()
+       WHERE address = $1`,
+      [address],
+    );
+
+    res.json({ address, amlFlagged: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function clearUserAml(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = stellarAddressSchema.safeParse(req.params["address"]);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid address format" });
+      return;
+    }
+    const address = parsed.data;
+
+    const rows = await query<{ id: number }>(
+      "SELECT id FROM users WHERE address = $1",
+      [address],
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "User not found" });
+      return;
+    }
+
+    await query(
+      `UPDATE users SET aml_flagged = FALSE, aml_flagged_at = NULL, updated_at = NOW()
+       WHERE address = $1`,
+      [address],
+    );
+
+    res.json({ address, amlFlagged: false });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getFlaggedUsers(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const rows = await query<{
+      address: string;
+      aml_flagged_at: Date;
+      total_deposited: string;
+      kyc_verified: boolean;
+    }>(
+      `SELECT
+         u.address,
+         u.aml_flagged_at,
+         COALESCE(SUM(uvp.deposited), 0)::text AS total_deposited,
+         u.kyc_verified
+       FROM users u
+       LEFT JOIN user_vault_positions uvp ON uvp.user_address = u.address
+       WHERE u.aml_flagged = TRUE
+       GROUP BY u.address, u.aml_flagged_at, u.kyc_verified
+       ORDER BY u.aml_flagged_at DESC`,
+    );
+
+    res.json(
+      rows.map((r) => ({
+        address: r.address,
+        amlFlaggedAt: r.aml_flagged_at,
+        totalDeposited: r.total_deposited,
+        kycVerified: r.kyc_verified,
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getPositionsSnapshot(req: Request, res: Response, next: NextFunction) {
+  try {
+    const asOfParam = req.query["asOf"] as string | undefined;
+    const contractIdParam = req.query["contractId"] as string | undefined;
+    const formatParam = req.query["format"] as string | undefined;
+
+    if (!asOfParam) {
+      res.status(400).json({ error: "BadRequest", message: "asOf query parameter is required (ISO 8601)" });
+      return;
+    }
+
+    const asOf = new Date(asOfParam);
+    if (isNaN(asOf.getTime())) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid asOf timestamp" });
+      return;
+    }
+
+    if (contractIdParam) {
+      const cidParsed = contractAddressSchema.safeParse(contractIdParam);
+      if (!cidParsed.success) {
+        res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+        return;
+      }
+    }
+
+    const params: unknown[] = [asOf.toISOString()];
+    let contractFilter = "";
+    if (contractIdParam) {
+      params.push(contractIdParam);
+      contractFilter = `AND v.contract_id = $${params.length}`;
+    }
+
+    const rows = await query<{
+      user_address: string;
+      vault_contract_id: string;
+      shares: string;
+      recorded_at: Date;
+    }>(
+      `SELECT DISTINCT ON (sbs.user_address, sbs.vault_id)
+         sbs.user_address,
+         v.contract_id AS vault_contract_id,
+         sbs.shares::text AS shares,
+         sbs.recorded_at
+       FROM share_balance_snapshots sbs
+       JOIN vaults v ON sbs.vault_id = v.id
+       WHERE sbs.recorded_at <= $1
+         ${contractFilter}
+       ORDER BY sbs.user_address, sbs.vault_id, sbs.epoch DESC`,
+      params,
+    );
+
+    if (formatParam === "csv") {
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="positions-snapshot-${asOf.toISOString()}.csv"`);
+      const header = "user_address,vault_contract_id,shares,recorded_at\n";
+      const csvBody = rows
+        .map((r) => `${r.user_address},${r.vault_contract_id},${r.shares},${r.recorded_at.toISOString()}`)
+        .join("\n");
+      res.send(header + csvBody);
+      return;
+    }
+
+    res.json(
+      rows.map((r) => ({
+        userAddress: r.user_address,
+        vaultContractId: r.vault_contract_id,
+        shares: r.shares,
+        recordedAt: r.recorded_at,
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getJobStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    const jobId = req.params["jobId"] as string;
+
+    const job = await jobQueue.getJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: "NotFound", message: "Job not found" });
+      return;
+    }
+
+    res.json({
+      id: job.id,
+      name: job.name,
+      state: job.state,
+      createdAt: job.createdOn,
+      completedOn: job.completedOn,
+      output: job.output,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getFailedJobs(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const jobs = await jobQueue.getFailedJobs(50);
+
+    res.json({
+      data: jobs.map((job) => ({
+        id: job.id,
+        name: job.name,
+        payload: job.data,
+        createdAt: job.createdOn,
+        completedAt: job.completedOn,
+        output: job.output,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** SSE stream of indexer tick progress (#757). */
+export function streamIndexerProgress(req: Request, res: Response): void {
+  sseManager.addIndexerClient(req, res);
 }

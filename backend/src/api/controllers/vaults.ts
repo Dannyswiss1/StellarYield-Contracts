@@ -5,6 +5,7 @@ import { VaultService } from "../../services/vault.js";
 import { readTotalAssets, readVaultState, readPaused, readCooperator, readCooperatorFeeBps } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
 import { AppError, ErrorCode } from "../middleware/errors.js";
+import { sseManager } from "../../services/sseManager.js";
 
 const vaultService = new VaultService();
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
@@ -977,6 +978,49 @@ export async function getVaultOperators(req: Request, res: Response, next: NextF
 }
 
 /**
+ * GET /api/v1/vaults/:contractId/fees/history
+ *
+ * Returns all fee rate changes for a vault ordered by recorded_at DESC.
+ * Returns [] for a vault with no fee changes. (#791)
+ */
+export async function getFeeHistory(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const vaultRow = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRow.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+    const rows = await query<{
+      old_fee_bps: number;
+      new_fee_bps: number;
+      changed_by: string;
+      recorded_at: Date;
+    }>(
+      `SELECT old_fee_bps, new_fee_bps, changed_by, recorded_at
+       FROM vault_fee_history
+       WHERE vault_id = $1
+       ORDER BY recorded_at DESC`,
+      [vaultRow[0].id],
+    );
+    setCacheHeaders(res);
+    res.json(
+      rows.map((r) => ({
+        oldFeeBps: r.old_fee_bps,
+        newFeeBps: r.new_fee_bps,
+        changedBy: r.changed_by,
+        recordedAt: r.recorded_at.toISOString(),
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/v1/vaults/:contractId/operators/log
  *
  * Returns a chronological history of operator additions and removals
@@ -1203,4 +1247,26 @@ export async function getCooperatorFees(req: Request, res: Response, next: NextF
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * SSE stream of vault events (#758). Optionally filtered to a comma-separated
+ * list of contract IDs via `?contractIds=`.
+ */
+export function streamVaultEvents(req: Request, res: Response): void {
+  const raw = typeof req.query["contractIds"] === "string" ? req.query["contractIds"] : undefined;
+
+  let contractIds: Set<string> | undefined;
+  if (raw) {
+    const ids = raw.split(",").map((id) => id.trim()).filter(Boolean);
+    for (const id of ids) {
+      if (!contractAddressSchema.safeParse(id).success) {
+        res.status(400).json({ error: "Bad Request", message: `Invalid contract ID format: ${id}` });
+        return;
+      }
+    }
+    contractIds = new Set(ids);
+  }
+
+  sseManager.addVaultClient(req, res, contractIds);
 }

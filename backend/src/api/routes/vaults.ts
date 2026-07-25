@@ -29,8 +29,10 @@ import {
   getMaturingSoonVaults,
   getFullyFundedVaults,
   getSimilarVaults,
+  getFeeHistory,
   getVaultFees,
   getCooperatorFees,
+  streamVaultEvents,
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
 import { requireApiKey } from "../middleware/auth.js";
@@ -93,6 +95,7 @@ vaultsRouter.get("/trending", getTrendingVaults);
 vaultsRouter.get("/new", validateQuery(newVaultsQuerySchema), getNewVaults);
 vaultsRouter.get("/maturing-soon", validateQuery(maturingSoonQuerySchema), getMaturingSoonVaults);
 vaultsRouter.get("/fully-funded", getFullyFundedVaults);
+vaultsRouter.get("/stream", streamVaultEvents);
 vaultsRouter.get("/factory/:factoryId", validateParams(vaultFactoryParamsSchema), listVaultsByFactory);
 vaultsRouter.get("/:contractId", validateParams(vaultParamsSchema), getVault);
 vaultsRouter.get("/:contractId/state/live", validateParams(vaultParamsSchema), getVaultLiveState);
@@ -138,6 +141,8 @@ vaultsRouter.get("/:contractId/export.csv", validateParams(vaultParamsSchema), e
 vaultsRouter.get("/:contractId/operators", validateParams(vaultParamsSchema), getVaultOperators);
 // Operator activity log: GET /api/v1/vaults/:contractId/operators/log
 vaultsRouter.get("/:contractId/operators/log", validateParams(vaultParamsSchema), getOperatorLog);
+// Fee rate history: GET /api/v1/vaults/:contractId/fees/history (#791)
+vaultsRouter.get("/:contractId/fees/history", validateParams(vaultParamsSchema), getFeeHistory);
 // Vault detail: GET /api/v1/vaults/:contractId
 vaultsRouter.get("/:contractId", validateParams(vaultParamsSchema), getVault);
 // Annual vault performance report: GET /api/v1/vaults/:contractId/report?year=2025

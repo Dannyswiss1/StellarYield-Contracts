@@ -109,6 +109,11 @@ const envSchema = z.object({
     .default("600")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(0)),
+  SSE_HEARTBEAT_MS: z
+    .string()
+    .default("15000")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(1)),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -172,4 +177,5 @@ export const config = {
   cors: {
     maxAge: parsed.data.CORS_MAX_AGE,
   },
+  sseHeartbeatMs: parsed.data.SSE_HEARTBEAT_MS,
 } as const;
