@@ -380,8 +380,25 @@ export class Indexer {
 
     const yieldDist = parseYieldDistributedEvent(event);
     if (yieldDist) {
-      await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
-      await this.recordEvent(event, "yield_distributed");
+      const feeResult = await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
+      // Store payload with netYield so GET /epochs can read it via lateral join (#792)
+      await query(
+        `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
+         VALUES ($1, $2, $3, 'yield_distributed', $4)
+         ON CONFLICT DO NOTHING`,
+        [
+          event.ledger ?? 0,
+          event.id ?? event.txHash ?? "",
+          event.contractId ?? "",
+          JSON.stringify({
+            epoch: yieldDist.epoch,
+            amount: yieldDist.amount.toString(),
+            netYield: feeResult.netYield,
+            operatorFee: feeResult.operatorFee,
+          }),
+        ],
+      );
+      indexerEventsProcessedTotal.inc();
       try {
         await this.notificationService?.notify("yield_distributed", yieldDist as any);
       } catch (e) {
@@ -573,6 +590,13 @@ export class Indexer {
       return;
     }
 
+    const feeUpdated = parseOperatorFeeUpdatedEvent(event);
+    if (feeUpdated) {
+      await this.handleOperatorFeeUpdated(event.contractId ?? "", feeUpdated);
+      await this.recordEvent(event, "operator_fee_updated");
+      return;
+    }
+
     const zkmeUpd = parseZkmeVerifierUpdatedEvent(event);
     if (zkmeUpd) {
       await this.handleZkmeVerifierUpdated(event.contractId ?? "", zkmeUpd);
@@ -738,22 +762,28 @@ export class Indexer {
   private async handleYieldDistributed(
     contractId: string,
     yieldDist: { epoch: number; amount: bigint; timestamp: bigint },
-  ): Promise<void> {
-    const vaultRow = await query<{ id: number }>(
-      "SELECT id FROM vaults WHERE contract_id = $1",
+  ): Promise<{ netYield: string; operatorFee: string }> {
+    const vaultRow = await query<{ id: number; operator_fee_bps: number }>(
+      "SELECT id, operator_fee_bps FROM vaults WHERE contract_id = $1",
       [contractId],
     );
     if (vaultRow.length === 0) {
       logger.warn({ contractId }, "yield_distributed for unknown vault — skipping epoch record");
-      return;
+      return { netYield: yieldDist.amount.toString(), operatorFee: "0" };
     }
     const vaultId = vaultRow[0].id;
+    const operatorFeeBps = vaultRow[0].operator_fee_bps ?? 0;
 
     const supplyRow = await query<{ total_supply: string }>(
       "SELECT total_supply FROM vaults WHERE id = $1",
       [vaultId],
     );
     const totalShares = supplyRow[0]?.total_supply ?? "0";
+
+    // Compute operator fee and net yield
+    const grossAmount = yieldDist.amount;
+    const operatorFee = (grossAmount * BigInt(operatorFeeBps)) / 10000n;
+    const netYield = grossAmount - operatorFee;
 
     await query(
       `INSERT INTO epochs (vault_id, epoch, yield_amount, total_shares, distributed_at)
@@ -773,10 +803,23 @@ export class Indexer {
       [vaultId, yieldDist.epoch],
     );
 
+    // #793: Fire vault.fee_earned webhook
+    try {
+      await this.notificationService?.notify("vault.fee_earned", {
+        contractId,
+        epoch: yieldDist.epoch,
+        operatorFee: operatorFee.toString(),
+        netYield: netYield.toString(),
+      });
+    } catch (e) {
+      logger.warn({ err: e }, "NotificationService.notify failed for vault.fee_earned");
+    }
+
     logger.info(
       { contractId, epoch: yieldDist.epoch, amount: yieldDist.amount.toString() },
       "Processed yield_distributed event",
     );
+    return { netYield: netYield.toString(), operatorFee: operatorFee.toString() };
   }
 
   private async handleVaultCreated(
@@ -1079,6 +1122,37 @@ export class Indexer {
     logger.info(
       { contractId, userAddress: redemptionRequest.userAddress, shares: redemptionRequest.shares.toString(), requestId: redemptionRequest.requestId },
       "Processed request_early_redemption event",
+    );
+  }
+
+  // #790: Handle operator fee rate change event
+  private async handleOperatorFeeUpdated(
+    contractId: string,
+    ev: { caller: string; oldFeeBps: number; newFeeBps: number },
+  ): Promise<void> {
+    const vaultRow = await query<{ id: number; operator_fee_bps: number }>(
+      "SELECT id, operator_fee_bps FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRow.length === 0) {
+      logger.warn({ contractId }, "operator_fee_updated for unknown vault — skipping");
+      return;
+    }
+    const vaultId = vaultRow[0].id;
+
+    await query(
+      `UPDATE vaults SET operator_fee_bps = $1, updated_at = NOW() WHERE id = $2`,
+      [ev.newFeeBps, vaultId],
+    );
+    await query(
+      `INSERT INTO vault_fee_history (vault_id, old_fee_bps, new_fee_bps, changed_by, recorded_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [vaultId, ev.oldFeeBps, ev.newFeeBps, ev.caller],
+    );
+    await cacheDel(`vault:${contractId}`);
+    logger.info(
+      { contractId, oldFeeBps: ev.oldFeeBps, newFeeBps: ev.newFeeBps },
+      "Processed operator_fee_updated event",
     );
   }
 
@@ -2148,6 +2222,50 @@ export function parseVaultRemovedEvent(rawEvent: unknown): ParsedVaultRemovedEve
     if (eventName !== "v_rem" && eventName !== "vault_removed") return null;
 
     return { contractId: String(ev["contractId"] ?? "") };
+  } catch {
+    return null;
+  }
+}
+
+// ── #790: parseOperatorFeeUpdatedEvent ───────────────────────────────────────
+
+export interface ParsedOperatorFeeUpdatedEvent {
+  caller: string;
+  oldFeeBps: number;
+  newFeeBps: number;
+}
+
+export function parseOperatorFeeUpdatedEvent(rawEvent: unknown): ParsedOperatorFeeUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "fee_upd" && eventName !== "operator_fee_updated") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+    const oldFeeBps = Number(decodeBigInt(arr[0]));
+    const newFeeBps = Number(decodeBigInt(arr[1]));
+
+    return { caller, oldFeeBps, newFeeBps };
   } catch {
     return null;
   }
