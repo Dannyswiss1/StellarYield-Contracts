@@ -87,7 +87,8 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   try {
     const vault = await vaultService.getVault(String(req.params["contractId"]));
     if (!vault) {
-      throw new AppError(ErrorCode.VAULT_NOT_FOUND, "Vault not found", 404);
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
     }
     const etag = `W/"${createHash("sha1").update(JSON.stringify(vault)).digest("hex")}"`;
     if (req.headers["if-none-match"] === etag) {
