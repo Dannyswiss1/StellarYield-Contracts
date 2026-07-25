@@ -1,6 +1,5 @@
 import crypto from 'crypto';
 import { pool } from '../database/pool';
-import { config } from '../config';
 
 interface WebhookPayload {
   event: string;

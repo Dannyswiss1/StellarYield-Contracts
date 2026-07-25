@@ -1,7 +1,6 @@
 import { readFileSync } from "fs";
 import { Router } from "express";
 import { pool } from "../../db/index.js";
-import { sseManager } from "../../services/sseManager.js";
 
 const { version } = JSON.parse(
   readFileSync(new URL("../../../package.json", import.meta.url), "utf-8"),
@@ -18,12 +17,11 @@ healthRouter.get("/", async (_req, res) => {
     idle: pool.idleCount,
     waiting: pool.waitingCount,
   };
-  const sseConnections = sseManager.getSseConnectionCount();
 
   try {
     await pool.query("SELECT 1");
-    res.json({ version, status: "ok", dbPool, sseConnections });
+    res.json({ version, status: "ok", dbPool });
   } catch {
-    res.status(503).json({ version, status: "error", dbPool, sseConnections });
+    res.status(503).json({ version, status: "error", dbPool });
   }
 });

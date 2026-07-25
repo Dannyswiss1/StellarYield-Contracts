@@ -33,29 +33,12 @@ export function requireApiKey(options?: { role?: string; minRole?: "readonly" | 
   return async (req: Request, res: Response, next: NextFunction) => {
     const ip = getClientIp(req);
     const authHeader = req.headers.authorization;
-    let plaintext: string | undefined;
-
-    if (authHeader?.startsWith("Bearer ")) {
-      plaintext = authHeader.slice(7);
-    } else if (typeof req.query?.apiKey === "string" && req.query.apiKey) {
-      plaintext = req.query.apiKey as string;
-    } else if (typeof req.query?.api_key === "string" && req.query.api_key) {
-      plaintext = req.query.api_key as string;
-    }
-
-    if (!plaintext) {
-      logger.info({
-        event: "auth_attempt",
-        success: false,
-        ip,
-        keyLabel: null,
-        path: req.path,
-        method: req.method,
-        reason: "missing_key",
-      });
+    if (!authHeader?.startsWith("Bearer ")) {
       res.status(401).json({ error: "Unauthorized", message: "Missing API key" });
       return;
     }
+
+    const plaintext = authHeader.slice(7);
     const keyHash = createHash("sha256").update(plaintext).digest("hex");
 
     const rows = await query<ApiKey>(

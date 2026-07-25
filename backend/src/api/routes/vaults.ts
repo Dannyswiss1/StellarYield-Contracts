@@ -29,7 +29,7 @@ import {
   getMaturingSoonVaults,
   getFullyFundedVaults,
   getSimilarVaults,
-  streamVaultEvents,
+  getFeeHistory,
   getVaultFees,
   getCooperatorFees,
 } from "../controllers/vaults.js";
@@ -85,7 +85,6 @@ const maturingSoonQuerySchema = z.object({
 export const vaultsRouter = Router();
 
 vaultsRouter.get("/categories", listCategories);
-vaultsRouter.get("/stream", streamVaultEvents);
 vaultsRouter.get("/", validateQuery(listVaultsQuerySchema), listVaults);
 vaultsRouter.get("/count", getVaultCount);
 // Search, filter, and discovery endpoints (#640–#643, #644, #645)
@@ -140,6 +139,8 @@ vaultsRouter.get("/:contractId/export.csv", validateParams(vaultParamsSchema), e
 vaultsRouter.get("/:contractId/operators", validateParams(vaultParamsSchema), getVaultOperators);
 // Operator activity log: GET /api/v1/vaults/:contractId/operators/log
 vaultsRouter.get("/:contractId/operators/log", validateParams(vaultParamsSchema), getOperatorLog);
+// Fee rate history: GET /api/v1/vaults/:contractId/fees/history (#791)
+vaultsRouter.get("/:contractId/fees/history", validateParams(vaultParamsSchema), getFeeHistory);
 // Vault detail: GET /api/v1/vaults/:contractId
 vaultsRouter.get("/:contractId", validateParams(vaultParamsSchema), getVault);
 // Annual vault performance report: GET /api/v1/vaults/:contractId/report?year=2025
