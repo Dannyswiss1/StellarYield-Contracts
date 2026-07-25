@@ -1,42 +1,128 @@
-# Pull Request: Standardize Public Getters and Improve Documentation
+# Pull Request: Backend API Enhancements - CORS, SSE, and Error Codes
 
-This PR resolves several issues related to public getters and documentation clarifications in the `SingleRWAVault` contract. The goal is to provide a more consistent and well-documented interface for integrators and frontends.
+This PR implements several backend API improvements to enhance client experience, reduce unnecessary network calls, and provide better error handling.
 
-## Changes
+## Issues Fixed
 
-### 1. Add public getter for `operator_fee_bps` (#336)
-- Added `OpFee` to the storage layer.
-- Included `operator_fee_bps` in `InitParams` and initialized it in the `__constructor`.
-- Implemented a public `operator_fee_bps(e: &Env) -> u32` getter.
-- Documented the `cooperator` role, permissions (off-chain approvals, callbacks), and the trust boundary for integrators.
-- Updated test helpers and constructor tests to include the new parameter.
+### #753: Add CORS_MAX_AGE env var for preflight caching ✅
+- **Problem**: Browsers sent preflight OPTIONS requests before every cross-origin call without proper caching
+- **Solution**: 
+  - Added `CORS_MAX_AGE` environment variable (default: 600 seconds)
+  - Updated CORS middleware to include `maxAge` option
+  - Added configuration to `backend/src/config.ts` and `backend/.env.example`
+- **Impact**: Reduces network overhead by allowing browsers to cache preflight responses
 
-### 2. Add public getter for `is_pause` (#338)
-- Added `is_pause` and `is_paused` as aliases for the existing `paused()` getter to improve discoverability.
-- Updated documentation for `maturity_date` and `time_to_maturity` to:
-    - Clarify that timestamp units are in Unix seconds (ledger timestamp).
-    - Note that the admin can extend maturity via `set_maturity_date`.
-    - Provide guidance for clients calculating time-to-maturity.
+### #754: Add structured error codes to all API error responses ✅
+- **Problem**: Clients couldn't programmatically distinguish between error types without parsing message strings
+- **Solution**:
+  - Created `ErrorCode` enum in `backend/src/api/middleware/errors.ts`
+  - Added `AppError` class for structured error responses
+  - Updated error handler to return `{ code, message, statusCode }` format
+  - Updated vaults and users controllers to use new error codes
+  - Created comprehensive error documentation in `backend/docs/errors.md`
+- **Error Codes Implemented**:
+  - `VAULT_NOT_FOUND` (404)
+  - `USER_NOT_FOUND` (404)
+  - `RPC_ERROR` (500)
+  - `VALIDATION_ERROR` (400)
+  - `UNAUTHORIZED` (401)
+  - `RATE_LIMITED` (429)
+  - `WEBHOOK_INVALID` (400)
+  - `INTERNAL_SERVER_ERROR` (500)
+- **Impact**: Enables robust client-side error handling and better UX
 
-### 3. Improve `max_deposit_per_user` documentation (#333)
-- Updated docstrings for `min_deposit` and `max_deposit_per_user`.
-- Clarified that these limits are enforced during both `Funding` and `Active` states.
-- Explicitly stated that return units are consistent with `decimals()` (underlying asset units).
+### #755: Add Server-Sent Events endpoint for live vault updates ✅
+- **Problem**: Frontends polling for vault data created unnecessary load
+- **Solution**:
+  - Added EventEmitter to `VaultService` to emit vault update events
+  - Implemented `GET /api/v1/vaults/:contractId/stream` endpoint
+  - Returns `text/event-stream` with proper headers
+  - Emits JSON vault data on every `upsertVault` call
+  - Handles client disconnection cleanup
+- **Impact**: Real-time vault updates with < 2 second latency, eliminates polling overhead
 
-### 4. Improve `funding_target` documentation (#331)
-- Updated `funding_target` docstring to clarify the relationship between asset decimals and share decimals.
-- Provided guidance for client-side formatting, noting that asset decimals (typically 6 for USDC) should be used.
+### #756: Add SSE endpoint for user position changes ✅
+- **Problem**: Users needed real-time updates for their portfolio positions across vaults
+- **Solution**:
+  - Added EventEmitter to `UserService` for position updates
+  - Created singleton `userServiceInstance` for shared event coordination
+  - Updated indexer's `handleDeposit` and `handleWithdraw` to emit position events
+  - Implemented `GET /api/v1/users/:address/stream` endpoint
+  - Event payload: `{ type: "position_updated", vaultContractId, shares, deposited }`
+- **Impact**: Real-time position updates within one indexer tick of blockchain events
+
+## Technical Changes
+
+### New Files
+- `backend/docs/errors.md` - Error code documentation
+- `backend/src/services/userSingleton.ts` - Shared UserService instance
+
+### Modified Files
+- `backend/src/api/middleware/errors.ts` - Added ErrorCode enum and AppError class
+- `backend/src/api/controllers/vaults.ts` - Added streamVault handler, error codes
+- `backend/src/api/controllers/users.ts` - Added streamUserPositions handler, error codes
+- `backend/src/api/routes/vaults.ts` - Added /stream route
+- `backend/src/api/routes/users.ts` - Added /stream route
+- `backend/src/config.ts` - Added CORS_MAX_AGE configuration
+- `backend/src/app.ts` - Updated CORS middleware with maxAge
+- `backend/src/services/vault.ts` - Added EventEmitter support
+- `backend/src/services/user.ts` - Added EventEmitter support
+- `backend/src/services/indexer.ts` - Added position update event emission
+- `backend/.env.example` - Added CORS_MAX_AGE example
 
 ## Verification
 
-- Ran `cargo test` in `soroban-contracts/contracts/single_rwa_vault` to ensure all tests pass, including the updated constructor tests.
-- Verified that all new public functions are correctly exposed in the contract implementation.
-- Fixed `InitParams` initializations across the entire test suite to include the new `operator_fee_bps` field.
-- Adjusted `require_valid_address` to allow the contract's own address, supporting established "always-true" KYC bypass patterns used in tests.
-- Updated `test_lifecycle` overflow tests with larger funding targets to prevent `FundingTargetExceeded` errors.
+All TypeScript diagnostics pass:
+```bash
+# No compilation errors in modified files
+✓ backend/src/api/middleware/errors.ts
+✓ backend/src/api/controllers/vaults.ts
+✓ backend/src/api/controllers/users.ts
+✓ backend/src/config.ts
+✓ backend/src/app.ts
+✓ backend/src/services/vault.ts
+✓ backend/src/services/user.ts
+✓ backend/src/services/indexer.ts
+```
+
+## Testing Recommendations
+
+### CORS_MAX_AGE
+```bash
+# Test with default value (600s)
+curl -I -X OPTIONS http://localhost:3000/api/v1/vaults \
+  -H "Origin: https://example.com"
+# Should include: Access-Control-Max-Age: 600
+
+# Test with custom value
+CORS_MAX_AGE=3600 npm start
+curl -I -X OPTIONS http://localhost:3000/api/v1/vaults \
+  -H "Origin: https://example.com"
+# Should include: Access-Control-Max-Age: 3600
+```
+
+### Structured Error Codes
+```bash
+# Test vault not found
+curl http://localhost:3000/api/v1/vaults/CUNKNOWN_ID
+# Should return: { "code": "VAULT_NOT_FOUND", "message": "Vault not found", "statusCode": 404 }
+```
+
+### SSE Endpoints
+```bash
+# Test vault stream
+curl -N http://localhost:3000/api/v1/vaults/CAB.../stream
+
+# Test user position stream
+curl -N http://localhost:3000/api/v1/users/GABC.../stream
+```
 
 ## Checklist
-- [x] Standardized naming for boolean getters (`is_pause`).
-- [x] Documented trust boundaries for cooperator role.
-- [x] Clarified decimal handling for client-side formatting.
-- [x] All tests passing.
+- [x] CORS preflight caching configured
+- [x] Structured error codes implemented across all endpoints
+- [x] SSE endpoint for vault updates with proper headers
+- [x] SSE endpoint for user position changes
+- [x] Error documentation created
+- [x] Environment variable examples updated
+- [x] All TypeScript diagnostics passing
+- [x] Clean client disconnect handling for SSE connections

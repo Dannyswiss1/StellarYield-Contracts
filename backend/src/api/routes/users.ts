@@ -4,6 +4,7 @@ import {
   getUser,
   getUserPortfolio,
   searchUsers,
+  streamUserPositions,
 } from "../controllers/users.js";
 import {
   validateParams,
@@ -27,4 +28,9 @@ usersRouter.get(
   "/:address/portfolio",
   validateParams(addressParamSchema),
   getUserPortfolio,
+);
+usersRouter.get(
+  "/:address/stream",
+  validateParams(addressParamSchema),
+  streamUserPositions,
 );

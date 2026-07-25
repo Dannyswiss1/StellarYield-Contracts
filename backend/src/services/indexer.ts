@@ -5,6 +5,7 @@ import { query } from "../db/index.js";
 import { getSorobanRpc } from "./stellar.js";
 import { VaultService } from "./vault.js";
 import { NotificationService } from "./notifications.js";
+import { userServiceInstance } from "./userSingleton.js";
 
 // ── Upstream helpers ───────────────────────────────────────────────────────────
 
@@ -382,6 +383,18 @@ export class Indexer {
       { contractId, receiver: deposit.receiver, shares: deposit.shares.toString() },
       "Processed deposit event",
     );
+    
+    // Get updated position and emit SSE event
+    const positionResult = await query<{ shares: string; deposited: string }>(
+      `SELECT shares, deposited FROM user_vault_positions uvp
+       JOIN vaults v ON uvp.vault_id = v.id
+       WHERE uvp.user_address = $1 AND v.contract_id = $2`,
+      [deposit.receiver, contractId],
+    );
+    if (positionResult.length > 0) {
+      const { shares, deposited } = positionResult[0];
+      userServiceInstance.emitPositionUpdate(deposit.receiver, contractId, shares, deposited);
+    }
   }
 
   private async handleWithdraw(
@@ -402,6 +415,18 @@ export class Indexer {
       { contractId, owner: withdraw.owner, shares: withdraw.shares.toString() },
       "Processed withdraw event",
     );
+    
+    // Get updated position and emit SSE event
+    const positionResult = await query<{ shares: string; deposited: string }>(
+      `SELECT shares, deposited FROM user_vault_positions uvp
+       JOIN vaults v ON uvp.vault_id = v.id
+       WHERE uvp.user_address = $1 AND v.contract_id = $2`,
+      [withdraw.owner, contractId],
+    );
+    if (positionResult.length > 0) {
+      const { shares, deposited } = positionResult[0];
+      userServiceInstance.emitPositionUpdate(withdraw.owner, contractId, shares, deposited);
+    }
   }
 
   private async handleYieldDistributed(

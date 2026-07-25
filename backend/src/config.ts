@@ -63,6 +63,11 @@ const envSchema = z.object({
     .default("300")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(1)),
+  CORS_MAX_AGE: z
+    .string()
+    .default("600")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(0)),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -110,5 +115,9 @@ export const config = {
   rateLimit: {
     public: parsed.data.RATE_LIMIT_PUBLIC,
     auth: parsed.data.RATE_LIMIT_AUTH,
+  },
+
+  cors: {
+    maxAge: parsed.data.CORS_MAX_AGE,
   },
 } as const;

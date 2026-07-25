@@ -1,6 +1,7 @@
 import type { Vault, UserVaultPosition, PaginatedResponse } from "../types/index.js";
 import { query } from "../db/index.js";
 import { logger } from "../logger.js";
+import { EventEmitter } from "events";
 
 interface ListVaultsOptions {
   page: number;
@@ -43,6 +44,18 @@ function mapVaultRow(row: VaultRow): Vault {
 }
 
 export class VaultService {
+  private emitter = new EventEmitter();
+
+  public onVaultUpdate(contractId: string, callback: (vault: Vault) => void): () => void {
+    const listener = (data: { contractId: string; vault: Vault }) => {
+      if (data.contractId === contractId) {
+        callback(data.vault);
+      }
+    };
+    this.emitter.on("vault:updated", listener);
+    return () => this.emitter.off("vault:updated", listener);
+  }
+
   async listVaults(opts: ListVaultsOptions): Promise<PaginatedResponse<Vault>> {
     const { page, pageSize, state, sort, order } = opts;
     const offset = (page - 1) * pageSize;
@@ -194,5 +207,11 @@ export class VaultService {
     );
 
     logger.info({ contractId }, "Vault upserted successfully");
+
+    // Emit update event for SSE listeners
+    const updatedVault = await this.getVault(contractId);
+    if (updatedVault) {
+      this.emitter.emit("vault:updated", { contractId, vault: updatedVault });
+    }
   }
 }

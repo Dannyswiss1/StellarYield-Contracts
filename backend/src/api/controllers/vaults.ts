@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { VaultService } from "../../services/vault.js";
 import { readTotalAssets, readVaultState } from "../../services/stellar.js";
+import { AppError, ErrorCode } from "../middleware/errors.js";
 
 const vaultService = new VaultService();
 
@@ -55,8 +56,7 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   try {
     const vault = await vaultService.getVault(String(req.params["contractId"]));
     if (!vault) {
-      res.status(404).json({ error: "NotFound", message: "Vault not found" });
-      return;
+      throw new AppError(ErrorCode.VAULT_NOT_FOUND, "Vault not found", 404);
     }
     setCacheHeaders(res);
     res.json(vault);
@@ -65,27 +65,21 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   }
 }
 
-export async function getVaultLiveState(req: Request, res: Response) {
+export async function getVaultLiveState(req: Request, res: Response, next: NextFunction) {
   try {
     const state = await readVaultState(String(req.params["contractId"]));
     res.json({ state });
   } catch (err) {
-    res.status(500).json({
-      error: "RpcError",
-      message: "Failed to read live vault state from chain",
-    });
+    next(new AppError(ErrorCode.RPC_ERROR, "Failed to read live vault state from chain", 500));
   }
 }
 
-export async function getVaultLiveTotalAssets(req: Request, res: Response) {
+export async function getVaultLiveTotalAssets(req: Request, res: Response, next: NextFunction) {
   try {
     const totalAssets = await readTotalAssets(String(req.params["contractId"]));
     res.json({ totalAssets: totalAssets.toString() });
   } catch (err) {
-    res.status(500).json({
-      error: "RpcError",
-      message: "Failed to read live total assets from chain",
-    });
+    next(new AppError(ErrorCode.RPC_ERROR, "Failed to read live total assets from chain", 500));
   }
 }
 
@@ -93,6 +87,41 @@ export async function getVaultPositions(req: Request, res: Response, next: NextF
   try {
     const positions = await vaultService.getVaultPositions(String(req.params["contractId"]));
     res.json(positions);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function streamVault(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    
+    // Verify vault exists
+    const vault = await vaultService.getVault(contractId);
+    if (!vault) {
+      throw new AppError(ErrorCode.VAULT_NOT_FOUND, "Vault not found", 404);
+    }
+
+    // Set SSE headers
+    res.set({
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    });
+
+    // Send initial vault data
+    res.write(`data: ${JSON.stringify(vault)}\n\n`);
+
+    // Listen for updates
+    const unsubscribe = vaultService.onVaultUpdate(contractId, (updatedVault) => {
+      res.write(`data: ${JSON.stringify(updatedVault)}\n\n`);
+    });
+
+    // Clean up on client disconnect
+    req.on("close", () => {
+      unsubscribe();
+      res.end();
+    });
   } catch (err) {
     next(err);
   }

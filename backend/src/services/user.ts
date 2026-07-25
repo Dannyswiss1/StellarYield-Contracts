@@ -4,8 +4,37 @@ import type {
   UserPortfolioResponse,
 } from "../types/index.js";
 import { query } from "../db/index.js";
+import { EventEmitter } from "events";
 
 export class UserService {
+  private emitter = new EventEmitter();
+
+  public onPositionUpdate(
+    address: string,
+    callback: (position: { vaultContractId: string; shares: string; deposited: string }) => void
+  ): () => void {
+    const listener = (data: { address: string; vaultContractId: string; shares: string; deposited: string }) => {
+      if (data.address === address) {
+        callback({
+          vaultContractId: data.vaultContractId,
+          shares: data.shares,
+          deposited: data.deposited,
+        });
+      }
+    };
+    this.emitter.on("position:updated", listener);
+    return () => this.emitter.off("position:updated", listener);
+  }
+
+  public emitPositionUpdate(
+    address: string,
+    vaultContractId: string,
+    shares: string,
+    deposited: string
+  ): void {
+    this.emitter.emit("position:updated", { address, vaultContractId, shares, deposited });
+  }
+
   async getUser(address: string): Promise<User | null> {
     const result = await query<{
       id: number;

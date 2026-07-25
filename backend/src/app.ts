@@ -18,7 +18,10 @@ export function createApp(): Express {
   const origins = config.allowedOrigins;
   if (origins.length > 0) {
     const origin = origins.length === 1 && origins[0] === "*" ? "*" : origins;
-    app.use(cors({ origin }));
+    app.use(cors({ 
+      origin,
+      maxAge: config.cors.maxAge,
+    }));
   }
 
   app.use("/health", publicLimiter, healthRouter);
