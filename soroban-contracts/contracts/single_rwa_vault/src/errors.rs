@@ -90,5 +90,5 @@ pub enum Error {
     /// No yield shortfall is recorded for this user.
     YieldShortfallNotFound = 51,
     /// The resolution amount is greater than the recorded shortfall.
-    InsufficientShortfall = 52,
+    InsufficientShortfall = 2,
 }

@@ -44,6 +44,11 @@ const envSchema = z.object({
     .default("200")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(1)),
+  INDEXER_LAG_ALERT_LEDGERS: z
+    .string()
+    .default("100")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(1)),
   WEBHOOK_SECRET: z
     .string()
     .default(""),
@@ -63,11 +68,36 @@ const envSchema = z.object({
     .default("300")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(1)),
-  CORS_MAX_AGE: z
+  DB_POOL_MIN: z
     .string()
-    .default("600")
+    .default("2")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(0)),
+  DB_POOL_MAX: z
+    .string()
+    .default("10")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(1)),
+  DB_IDLE_TIMEOUT_MS: z
+    .string()
+    .default("10000")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(0)),
+  DB_QUERY_TIMEOUT_MS: z
+    .string()
+    .default("30000")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(1)),
+  DB_SLOW_QUERY_MS: z
+    .string()
+    .default("500")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(1)),
+  EVENTS_RETENTION_DAYS: z
+    .string()
+    .default("90")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(1)),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -94,12 +124,18 @@ export const config = {
 
   db: {
     url: parsed.data.DATABASE_URL,
+    poolMin: parsed.data.DB_POOL_MIN,
+    poolMax: parsed.data.DB_POOL_MAX,
+    idleTimeoutMs: parsed.data.DB_IDLE_TIMEOUT_MS,
+    queryTimeoutMs: parsed.data.DB_QUERY_TIMEOUT_MS,
+    slowQueryMs: parsed.data.DB_SLOW_QUERY_MS,
   },
 
   indexer: {
     startLedger: parsed.data.INDEXER_START_LEDGER,
     pollIntervalMs: parsed.data.INDEXER_POLL_INTERVAL_MS,
     batchSize: parsed.data.INDEXER_BATCH_SIZE,
+    lagAlertLedgers: parsed.data.INDEXER_LAG_ALERT_LEDGERS,
   },
 
   allowedOrigins: (() => {
@@ -117,7 +153,5 @@ export const config = {
     auth: parsed.data.RATE_LIMIT_AUTH,
   },
 
-  cors: {
-    maxAge: parsed.data.CORS_MAX_AGE,
-  },
+  eventsRetentionDays: parsed.data.EVENTS_RETENTION_DAYS,
 } as const;

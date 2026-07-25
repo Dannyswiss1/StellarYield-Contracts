@@ -41,6 +41,9 @@ pub struct InitParams {
     pub timelock_delay: u64,
     /// Yield vesting period in seconds (0 = instant claiming for backward compatibility)
     pub yield_vesting_period: u64,
+    /// Lock-up period in seconds after deposit during which shares cannot be transferred or redeemed.
+    /// 0 means no lock-up.
+    pub lock_up_period: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

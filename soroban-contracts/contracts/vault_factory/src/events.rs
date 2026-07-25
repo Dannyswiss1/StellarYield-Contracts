@@ -10,16 +10,20 @@ pub fn emit_vault_created(
     vault_type: VaultType,
     name: String,
     creator: Address,
-    /// Operator fee in basis points (#515).
     operator_fee_bps: u32,
-    /// Unix timestamp at which the vault matures (#516).
     maturity_date: u64,
-    /// Expected APY in basis points (#517).
     expected_apy: u32,
 ) {
     e.events().publish(
         (symbol_short!("v_create"), vault),
-        (vault_type, name, creator, operator_fee_bps, maturity_date, expected_apy),
+        (
+            vault_type,
+            name,
+            creator,
+            operator_fee_bps,
+            maturity_date,
+            expected_apy,
+        ),
     );
 }
 

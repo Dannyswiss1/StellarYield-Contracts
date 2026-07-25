@@ -308,6 +308,7 @@ fn deploy_underfunded(funding_deadline: u64) -> (Env, Address, Address, Address,
         expected_apy: 500u32,
         timelock_delay: 172800u64, // 48 hours
         yield_vesting_period: 0u64,
+        lock_up_period: 0u64,
     };
 
     let vault_id = env.register(SingleRWAVault, (params,));
@@ -435,4 +436,66 @@ fn test_underfunded_single_user_refund_and_double_refund_prevented() {
         vault.refund(&user1);
     }));
     assert!(result.is_err(), "Double refund should panic");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #221: emergency_withdraw must not affect snapshot-based yield for
+// remaining users.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// After an emergency_withdraw drains the vault, remaining users' epoch
+/// snapshots are unchanged and their pending yield is still correctly computed.
+/// (Actual token transfer on claim will be limited by vault balance, but the
+/// accounting — snapshot data and pending_yield — must remain consistent.)
+#[test]
+fn test_emergency_withdraw_does_not_corrupt_yield_snapshots() {
+    use crate::test_helpers::mint_usdc;
+    use crate::test_helpers::setup_with_kyc_bypass;
+
+    let ctx = setup_with_kyc_bypass();
+    let v = ctx.vault();
+    let e = &ctx.env;
+
+    // ── Setup: two users deposit, vault activates ──────────────────────────
+    // funding_target = 100_000_000; split evenly between two users.
+    let alice = crate::test_helpers::create_user_with_balance(&ctx, 50_000_000);
+    let bob = crate::test_helpers::create_user_with_balance(&ctx, 50_000_000);
+
+    v.deposit(&alice, &50_000_000i128, &alice);
+    v.deposit(&bob, &50_000_000i128, &bob);
+    v.activate_vault(&ctx.operator);
+
+    // ── Distribute yield (epoch 1) ─────────────────────────────────────────
+    let yield_amount = 10_000_000i128;
+    mint_usdc(e, &ctx.asset_id, &ctx.operator, yield_amount);
+    let epoch = v.distribute_yield(&ctx.operator, &yield_amount);
+    assert_eq!(epoch, 1u32);
+
+    // Verify pending yield for both users before emergency_withdraw
+    let alice_pending_before = v.pending_yield(&alice);
+    let bob_pending_before = v.pending_yield(&bob);
+    assert!(alice_pending_before > 0, "alice should have pending yield");
+    assert!(bob_pending_before > 0, "bob should have pending yield");
+    // Equal shares → equal yield
+    assert_eq!(alice_pending_before, bob_pending_before);
+
+    // ── Emergency withdraw: drain the vault ───────────────────────────────
+    let recipient = soroban_sdk::Address::generate(e);
+    v.pause(&ctx.admin, &soroban_sdk::String::from_str(e, "emergency"));
+    v.emergency_withdraw(&ctx.admin, &recipient);
+
+    // ── Snapshots and pending_yield must be unchanged ─────────────────────
+    // No production snapshot logic was modified; only the vault's token
+    // balance changed.
+    let alice_pending_after = v.pending_yield(&alice);
+    let bob_pending_after = v.pending_yield(&bob);
+
+    assert_eq!(
+        alice_pending_after, alice_pending_before,
+        "alice pending yield must be unchanged after emergency_withdraw"
+    );
+    assert_eq!(
+        bob_pending_after, bob_pending_before,
+        "bob pending yield must be unchanged after emergency_withdraw"
+    );
 }

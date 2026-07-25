@@ -1,8 +1,29 @@
 import type { Epoch } from "../types/index.js";
 import { query } from "../db/index.js";
+import { cacheGet, cacheSet, cacheDel } from "../cache/redis.js";
+
+const EPOCHS_CACHE_TTL = 30;
+const PENDING_YIELD_CACHE_TTL = 10;
 
 export class YieldService {
+  private formatYieldPerShare(yieldAmount: string, totalShares: string): string {
+    const yieldBig = BigInt(yieldAmount);
+    const sharesBig = BigInt(totalShares);
+    if (sharesBig === BigInt(0)) return "0";
+    const DECIMALS = BigInt(10) ** BigInt(18);
+    const result = (yieldBig * DECIMALS) / sharesBig;
+    const resultStr = result.toString();
+    const padded = resultStr.padStart(19, "0");
+    const integer = padded.slice(0, -18);
+    const fraction = padded.slice(-18);
+    return `${integer}.${fraction}`;
+  }
+
   async getVaultEpochs(contractId: string): Promise<Epoch[]> {
+    const cacheKey = `epochs:${contractId}`;
+    const cached = await cacheGet<Epoch[]>(cacheKey);
+    if (cached) return cached;
+
     const rows = await query<{
       id: number;
       vault_id: number;
@@ -19,7 +40,7 @@ export class YieldService {
       [contractId],
     );
 
-    return rows.map((row) => ({
+    const epochs = rows.map((row) => ({
       id: row.id,
       vaultId: row.vault_id,
       epoch: row.epoch,
@@ -27,12 +48,19 @@ export class YieldService {
       totalShares: row.total_shares,
       distributedAt: row.distributed_at,
     }));
+
+    await cacheSet(cacheKey, epochs, EPOCHS_CACHE_TTL);
+    return epochs;
   }
 
   async getUserPendingYield(
     contractId: string,
     userAddress: string,
   ): Promise<{ pendingYield: string; epochs: number[]; claimedEpochs: number[] }> {
+    const cacheKey = `pending-yield:${contractId}:${userAddress}`;
+    const cached = await cacheGet<{ pendingYield: string; epochs: number[]; claimedEpochs: number[] }>(cacheKey);
+    if (cached) return cached;
+
     const positionRows = await query<{
       shares: string;
       last_claimed_epoch: number;
@@ -68,20 +96,29 @@ export class YieldService {
     for (const row of epochRows) {
       if (row.epoch <= lastClaimedEpoch) {
         claimedEpochs.push(row.epoch);
-      } else {
+        continue;
+      }
+
+      const totalShares = BigInt(row.total_shares);
+      if (totalShares <= BigInt(0)) {
+        continue;
+      }
+
+      const epochYield = (BigInt(row.yield_amount) * shares) / totalShares;
+      if (epochYield > BigInt(0)) {
+        pendingYield += epochYield;
         pendingEpochs.push(row.epoch);
-        const totalShares = BigInt(row.total_shares);
-        if (totalShares > BigInt(0)) {
-          pendingYield += (shares * BigInt(row.yield_amount)) / totalShares;
-        }
       }
     }
 
-    return {
+    const result = {
       pendingYield: pendingYield.toString(),
       epochs: pendingEpochs,
       claimedEpochs,
     };
+
+    await cacheSet(cacheKey, result, PENDING_YIELD_CACHE_TTL);
+    return result;
   }
 
   async getYieldSummary(contractId: string): Promise<{
@@ -148,5 +185,64 @@ export class YieldService {
        ON CONFLICT (vault_id, epoch) DO NOTHING`,
       [vaultId, epoch, yieldAmount, totalShares],
     );
+    await cacheDel(`epochs:*`);
+  }
+
+  async getYieldPerShareHistory(
+    contractId: string,
+    from?: Date,
+    to?: Date,
+    page: number = 1,
+    pageSize: number = 20,
+  ): Promise<{
+    data: Array<{ epoch: number; yieldPerShare: string; distributedAt: string | null }>;
+    total: number;
+  }> {
+    const offset = (page - 1) * pageSize;
+    const whereConditions: string[] = ["v.contract_id = $1"];
+    const params: any[] = [contractId];
+
+    if (from) {
+      whereConditions.push(`e.distributed_at >= $${params.length + 1}`);
+      params.push(from);
+    }
+    if (to) {
+      whereConditions.push(`e.distributed_at <= $${params.length + 1}`);
+      params.push(to);
+    }
+
+    const whereClause = whereConditions.join(" AND ");
+
+    const rows = await query<{
+      epoch: number;
+      yield_amount: string;
+      total_shares: string;
+      distributed_at: Date | null;
+    }>(
+      `SELECT e.epoch, e.yield_amount, e.total_shares, e.distributed_at
+       FROM epochs e
+       JOIN vaults v ON e.vault_id = v.id
+       WHERE ${whereClause}
+       ORDER BY e.epoch ASC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, pageSize, offset],
+    );
+
+    const countResult = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM epochs e
+       JOIN vaults v ON e.vault_id = v.id
+       WHERE ${whereClause}`,
+      params,
+    );
+
+    const total = parseInt(countResult[0]?.count ?? "0", 10);
+
+    const data = rows.map((row) => ({
+      epoch: row.epoch,
+      yieldPerShare: this.formatYieldPerShare(row.yield_amount, row.total_shares),
+      distributedAt: row.distributed_at ? row.distributed_at.toISOString() : null,
+    }));
+
+    return { data, total };
   }
 }

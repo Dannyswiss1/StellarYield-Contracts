@@ -67,6 +67,7 @@ fn deploy(funding_deadline: u64) -> Ctx {
         expected_apy: 500u32,
         timelock_delay: 172800u64, // 48 hours
         yield_vesting_period: 0u64,
+        lock_up_period: 0u64,
     };
 
     let vault_id = env.register(SingleRWAVault, (params,));

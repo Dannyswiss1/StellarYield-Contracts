@@ -928,6 +928,7 @@ impl VaultFactory {
             rwa_document_uri,
             rwa_category,
             expected_apy,
+            lock_up_period: 0u64,
         };
 
         let vault_addr = e
@@ -964,12 +965,9 @@ impl VaultFactory {
             VaultType::SingleRwa,
             name,
             e.current_contract_address(),
-<<<<<<< feature/vault-response-fields-and-ci
             early_redemption_fee_bps, // #515 operator_fee_bps
             maturity_date,            // #516 maturity_date
             expected_apy,             // #517 expected_apy
-=======
->>>>>>> main
         );
 
         bump_instance(e);

@@ -92,6 +92,7 @@ fn make_vault(env: &Env) -> (Address, Address, Address, Address) {
             expected_apy: 500u32,
             timelock_delay: 172800u64,
             yield_vesting_period: 0u64,
+            lock_up_period: 0u64,
         },),
     );
 

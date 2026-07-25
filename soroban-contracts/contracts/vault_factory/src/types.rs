@@ -73,6 +73,8 @@ pub struct SingleRwaVaultInitParams {
     pub rwa_document_uri: String,
     pub rwa_category: String,
     pub expected_apy: u32,
+    /// Lock-up period in seconds after deposit (0 = no lock-up).
+    pub lock_up_period: u64,
 }
 
 /// Parameters for batch vault creation (mirrors BatchVaultParams in Solidity).

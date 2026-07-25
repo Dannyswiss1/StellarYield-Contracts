@@ -57,6 +57,8 @@ mod test_inflation_attack;
 #[cfg(test)]
 mod test_lifecycle;
 #[cfg(test)]
+mod test_lock_up;
+#[cfg(test)]
 mod test_multiple_deposit_times;
 #[cfg(test)]
 mod test_multisig_emergency;
@@ -215,6 +217,9 @@ impl SingleRWAVault {
         // Timelock configuration
         put_timelock_delay(e, params.timelock_delay);
         put_timelock_counter(e, 0u32);
+
+        // Lock-up period configuration
+        put_lock_up_period(e, params.lock_up_period);
 
         e.storage()
             .instance()
@@ -422,6 +427,8 @@ impl SingleRWAVault {
         put_total_deposited(e, get_total_deposited(e) + assets);
         _mint(e, &receiver, shares);
         record_deposit_activity(e, get_current_epoch(e), assets, is_new_investor);
+        // Record the deposit timestamp for lock-up enforcement
+        put_deposit_timestamp(e, &receiver, e.ledger().timestamp());
 
         // --- Interaction (external call last) ---
         transfer_asset_to_vault(e, &caller, assets);
@@ -477,6 +484,8 @@ impl SingleRWAVault {
         put_total_deposited(e, get_total_deposited(e) + assets);
         _mint(e, &receiver, shares);
         record_deposit_activity(e, get_current_epoch(e), assets, is_new_investor);
+        // Record the deposit timestamp for lock-up enforcement
+        put_deposit_timestamp(e, &receiver, e.ledger().timestamp());
 
         // --- Interaction (external call last) ---
         transfer_asset_to_vault(e, &caller, assets);
@@ -513,6 +522,7 @@ impl SingleRWAVault {
         require_not_blacklisted_withdraw_parties(e, &caller, &owner, &receiver);
         require_active_or_matured(e);
         require_positive(e, assets);
+        require_lock_up_elapsed(e, &owner);
 
         let shares = preview_withdraw(e, assets);
 
@@ -566,6 +576,7 @@ impl SingleRWAVault {
         require_not_blacklisted_withdraw_parties(e, &caller, &owner, &receiver);
         require_active_or_matured(e);
         require_positive(e, shares);
+        require_lock_up_elapsed(e, &owner);
 
         if caller != owner {
             let allowance = get_share_allowance(e, &owner, &caller);
@@ -2512,6 +2523,7 @@ impl SingleRWAVault {
         require_state(e, VaultState::Active);
         require_not_blacklisted(e, &caller);
         require_positive(e, shares);
+        require_lock_up_elapsed(e, &caller);
 
         update_user_snapshot(e, &caller);
 
@@ -2808,6 +2820,35 @@ impl SingleRWAVault {
         put_yield_vesting_period(e, vesting_period);
         emit_yield_vesting_period_set(e, vesting_period);
         bump_instance(e);
+    }
+
+    /// Update the global lock-up period (seconds).  Only applies to future
+    /// deposits — existing `DepositTimestamp` entries are unaffected.
+    pub fn set_lock_up_period(e: &Env, admin: Address, period: u64) {
+        admin.require_auth();
+        require_admin(e, &admin);
+        put_lock_up_period(e, period);
+        bump_instance(e);
+    }
+
+    /// Returns the remaining lock-up time in seconds for `user`.
+    /// Returns 0 when there is no lock-up or it has already elapsed.
+    pub fn lock_up_remaining(e: &Env, user: Address) -> u64 {
+        let period = get_lock_up_period(e);
+        if period == 0 {
+            return 0;
+        }
+        let deposit_ts = get_deposit_timestamp(e, &user);
+        if deposit_ts == 0 {
+            return 0;
+        }
+        let now = e.ledger().timestamp();
+        let unlock_at = deposit_ts + period;
+        if now >= unlock_at {
+            0
+        } else {
+            unlock_at - now
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -3724,6 +3765,7 @@ impl SingleRWAVault {
 
     pub fn transfer(e: &Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
+        require_lock_up_elapsed(e, &from);
         require_transfer_parties_allowed(e, &from, &to);
         update_user_snapshots_for_transfer(e, &from, &to);
         spend_share_balance(e, &from, amount);
@@ -3736,6 +3778,7 @@ impl SingleRWAVault {
     pub fn transfer_from(e: &Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
         require_not_blacklisted(e, &spender);
+        require_lock_up_elapsed(e, &from);
         require_transfer_parties_allowed(e, &from, &to);
         update_user_snapshots_for_transfer(e, &from, &to);
         let allowance = get_share_allowance(e, &from, &spender);
@@ -4125,6 +4168,24 @@ fn require_not_blacklisted(e: &Env, addr: &Address) {
     }
 }
 
+/// Panics with `Error::VaultPaused` (SharesLocked) when the user's deposit lock-up has not
+/// yet elapsed.  A lock-up period of 0 always passes.
+fn require_lock_up_elapsed(e: &Env, user: &Address) {
+    let period = get_lock_up_period(e);
+    if period == 0 {
+        return;
+    }
+    let deposit_ts = get_deposit_timestamp(e, user);
+    if deposit_ts == 0 {
+        // No deposit recorded — nothing is locked.
+        return;
+    }
+    let now = e.ledger().timestamp();
+    if now < deposit_ts + period {
+        panic_with_error!(e, Error::VaultPaused);
+    }
+}
+
 fn transfer_restrictions_exempt(e: &Env, from: &Address, to: &Address) -> bool {
     get_transfer_exempt(e, from) || get_transfer_exempt(e, to)
 }
@@ -4258,6 +4319,7 @@ mod test {
             expected_apy: 500,
             timelock_delay: 172800u64,  // 48 hours
             yield_vesting_period: 0u64, // Default to 0 for instant claiming
+            lock_up_period: 0u64,
         };
 
         let vault_addr = e.register(SingleRWAVault, (params,));

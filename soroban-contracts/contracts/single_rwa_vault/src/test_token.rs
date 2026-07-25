@@ -39,6 +39,7 @@ fn default_params(env: &Env, admin: &Address, asset: &Address) -> InitParams {
         expected_apy: 500_u32,
         timelock_delay: 172800u64, // 48 hours
         yield_vesting_period: 0u64,
+        lock_up_period: 0u64,
     }
 }
 
@@ -568,4 +569,99 @@ fn test_redeem_zero_shares_panics() {
     v.deposit(&ctx.user, &dep, &ctx.user);
     v.activate_vault(&ctx.operator);
     v.redeem(&ctx.user, &0_i128, &ctx.user, &ctx.user);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #197: Transfer of shares during an active epoch.
+//
+// Transferring shares mid-epoch triggers update_user_snapshot for both
+// sender and receiver, recording their pre-transfer balances.  Yield
+// distributed *after* the transfer is therefore split according to the
+// snapshot balances, not the post-transfer balances.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Alice holds all shares at epoch start.  She transfers half to Bob
+/// mid-epoch.  After yield is distributed (epoch 1), Alice's pending yield
+/// is based on her full pre-transfer balance and Bob's is based on 0
+/// (he held nothing when the snapshot was taken).
+#[test]
+fn test_transfer_mid_epoch_yield_split() {
+    use crate::storage::{get_has_snapshot_for_epoch, get_user_shares_at_epoch};
+
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Give Alice 1 000 shares before any epoch accounting exists.
+    give_shares(&env, &vault_id, &alice, 1_000_i128);
+
+    // Advance to epoch 1 (mimics what distribute_yield would record).
+    advance_epoch(&env, &vault_id, 1, 100_i128, 1_000_i128);
+
+    // Alice transfers 400 shares to Bob mid-epoch.
+    // update_user_snapshots_for_transfer fires here, snapshotting both
+    // parties with their *current* (pre-transfer) balances.
+    client.transfer(&alice, &bob, &400_i128);
+
+    // ── Snapshot assertions ───────────────────────────────────────────────
+    env.as_contract(&vault_id, || {
+        // Alice's snapshot: 1 000 (full balance before transfer)
+        assert!(get_has_snapshot_for_epoch(&env, &alice, 1));
+        assert_eq!(get_user_shares_at_epoch(&env, &alice, 1), 1_000_i128);
+
+        // Bob's snapshot: 0 (he held nothing before the transfer)
+        assert!(get_has_snapshot_for_epoch(&env, &bob, 1));
+        assert_eq!(get_user_shares_at_epoch(&env, &bob, 1), 0_i128);
+    });
+
+    // ── Post-transfer balances ────────────────────────────────────────────
+    assert_eq!(client.balance(&alice), 600_i128);
+    assert_eq!(client.balance(&bob), 400_i128);
+
+    // ── Pending yield reflects snapshot, not current balance ──────────────
+    // Alice contributed 1 000 / 1 000 = 100 % of epoch-1 shares → all yield.
+    let alice_yield = client.pending_yield(&alice);
+    let bob_yield = client.pending_yield(&bob);
+
+    assert_eq!(
+        alice_yield, 100_i128,
+        "alice should receive full epoch-1 yield"
+    );
+    assert_eq!(bob_yield, 0_i128, "bob held no shares at epoch-1 snapshot");
+}
+
+/// Verify that a second transfer in the same epoch does NOT overwrite the
+/// already-recorded snapshot (snapshot is written once per epoch per user).
+#[test]
+fn test_transfer_mid_epoch_snapshot_written_once() {
+    use crate::storage::get_user_shares_at_epoch;
+
+    let (env, vault_id, _, _) = setup();
+    let client = SingleRWAVaultClient::new(&env, &vault_id);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    give_shares(&env, &vault_id, &alice, 1_000_i128);
+    give_shares(&env, &vault_id, &bob, 500_i128);
+
+    advance_epoch(&env, &vault_id, 1, 150_i128, 1_500_i128);
+
+    // First transfer: alice → bob 200 shares
+    client.transfer(&alice, &bob, &200_i128);
+
+    // Second transfer: bob → alice 100 shares (same epoch)
+    client.transfer(&bob, &alice, &100_i128);
+
+    env.as_contract(&vault_id, || {
+        // Alice's snapshot must still reflect her balance at the FIRST transfer
+        // (1 000), not the balance at the second transfer (800).
+        assert_eq!(get_user_shares_at_epoch(&env, &alice, 1), 1_000_i128);
+        // Bob's snapshot: 500 (balance at first transfer where he was receiver)
+        assert_eq!(get_user_shares_at_epoch(&env, &bob, 1), 500_i128);
+    });
+
+    // Final balances after both transfers
+    assert_eq!(client.balance(&alice), 900_i128); // 1000 - 200 + 100
+    assert_eq!(client.balance(&bob), 600_i128); // 500 + 200 - 100
 }

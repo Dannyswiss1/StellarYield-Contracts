@@ -58,7 +58,7 @@ describe("YieldService", () => {
   });
 
   describe("getUserPendingYield", () => {
-    it("returns zero pendingYield when user has no shares", async () => {
+    it("returns zero pendingYield and no pending epochs when user has no shares", async () => {
       const { query, service } = await getTestContext();
       query
         .mockResolvedValueOnce([]) // no position row
@@ -68,7 +68,7 @@ describe("YieldService", () => {
 
       const result = await service.getUserPendingYield("CC_VAULT", "GUSER");
       expect(result.pendingYield).toBe("0");
-      expect(result.epochs).toEqual([1]);
+      expect(result.epochs).toEqual([]);
       expect(result.claimedEpochs).toEqual([]);
     });
 
@@ -81,7 +81,7 @@ describe("YieldService", () => {
         ]);
 
       const result = await service.getUserPendingYield("CC_VAULT", "GUSER");
-      // 1000 * 500 / 5000 = 100
+      // 500 * 1000 / 5000 = 100
       expect(result.pendingYield).toBe("100");
       expect(result.epochs).toEqual([1]);
       expect(result.claimedEpochs).toEqual([]);
@@ -97,7 +97,7 @@ describe("YieldService", () => {
         ]);
 
       const result = await service.getUserPendingYield("CC_VAULT", "GUSER");
-      // epoch1: 1000*500/5000=100, epoch2: 1000*1000/5000=200, total=300
+      // epoch1: 500*1000/5000=100, epoch2: 1000*1000/5000=200, total=300
       expect(result.pendingYield).toBe("300");
       expect(result.epochs).toEqual([1, 2]);
       expect(result.claimedEpochs).toEqual([]);
@@ -118,10 +118,26 @@ describe("YieldService", () => {
       expect(result.epochs).toEqual([2]);
       expect(result.claimedEpochs).toEqual([1]);
     });
+
+    it("excludes epochs that compute to zero yield", async () => {
+      const { query, service } = await getTestContext();
+      query
+        .mockResolvedValueOnce([{ shares: "1", last_claimed_epoch: -1 }])
+        .mockResolvedValueOnce([
+          { epoch: 1, yield_amount: "1", total_shares: "5000" },
+          { epoch: 2, yield_amount: "10000", total_shares: "5000" },
+        ]);
+
+      const result = await service.getUserPendingYield("CC_VAULT", "GUSER");
+      // epoch1 floors to 0, epoch2 = 10000*1/5000=2
+      expect(result.pendingYield).toBe("2");
+      expect(result.epochs).toEqual([2]);
+      expect(result.claimedEpochs).toEqual([]);
+    });
   });
 
   describe("recordEpoch", () => {
-    it("calls query with INSERT INTO epochs and correct params", async () => {
+    it("persists an epoch with an idempotent insert", async () => {
       const { query, service } = await getTestContext();
       query.mockResolvedValue([]);
 
@@ -131,6 +147,22 @@ describe("YieldService", () => {
         expect.stringContaining("INSERT INTO epochs"),
         [10, 1, "1000", "50000"],
       );
+      expect(query.mock.calls[0][0]).toContain("ON CONFLICT (vault_id, epoch) DO NOTHING");
+    });
+
+    it("uses the same conflict-safe insert when the same vault and epoch are recorded twice", async () => {
+      const { query, service } = await getTestContext();
+      query.mockResolvedValue([]);
+
+      await service.recordEpoch(10, 7, "2500", "100000");
+      await service.recordEpoch(10, 7, "2500", "100000");
+
+      expect(query).toHaveBeenCalledTimes(2);
+      for (const call of query.mock.calls) {
+        expect(call[0]).toContain("INSERT INTO epochs");
+        expect(call[0]).toContain("ON CONFLICT (vault_id, epoch) DO NOTHING");
+        expect(call[1]).toEqual([10, 7, "2500", "100000"]);
+      }
     });
   });
 });

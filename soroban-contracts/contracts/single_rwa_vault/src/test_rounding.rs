@@ -30,6 +30,7 @@ fn default_params(env: &Env, admin: &Address, asset: &Address) -> InitParams {
         expected_apy: 500_u32,
         timelock_delay: 172800u64,
         yield_vesting_period: 0u64,
+        lock_up_period: 0u64,
     }
 }
 

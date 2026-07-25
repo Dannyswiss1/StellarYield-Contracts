@@ -120,6 +120,20 @@ export async function readShareBalance(
 }
 
 /**
+ * Read whether a user address is KYC verified by the vault contract.
+ */
+export async function readKycVerified(
+  contractId: string,
+  userAddress: string,
+): Promise<boolean> {
+  const addrArg = Address.fromString(userAddress).toScVal();
+  const value = await simulateRead<boolean>(contractId, "is_kyc_verified", [
+    addrArg,
+  ]);
+  return Boolean(value);
+}
+
+/**
  * Read the current epoch from the contract.
  * Returns 0 for vaults in the "Funding" state.
  *
@@ -143,6 +157,45 @@ export async function readCurrentEpoch(
  *
  * Closes #430
  */
+/**
+ * Read the RWA name from a vault contract.
+ * Returns null on simulation error.
+ */
+export async function readRwaName(contractId: string): Promise<string | null> {
+  try {
+    const raw = await simulateRead<string | Record<string, unknown>>(contractId, "rwa_name");
+    return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the RWA symbol from a vault contract.
+ * Returns null on simulation error.
+ */
+export async function readRwaSymbol(contractId: string): Promise<string | null> {
+  try {
+    const raw = await simulateRead<string | Record<string, unknown>>(contractId, "rwa_symbol");
+    return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the RWA document URI from a vault contract.
+ * Returns null on simulation error.
+ */
+export async function readRwaDocumentUri(contractId: string): Promise<string | null> {
+  try {
+    const raw = await simulateRead<string | Record<string, unknown>>(contractId, "rwa_document_uri");
+    return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+  } catch {
+    return null;
+  }
+}
+
 export async function readEpochData(
   contractId: string,
   epoch: number,
@@ -173,4 +226,97 @@ export async function readEpochData(
     totalShares: BigInt(raw.total_shares ?? raw[1] ?? 0n),
     timestamp: BigInt(raw.timestamp ?? raw[2] ?? 0n),
   };
+}
+
+/**
+ * Read the paused state of the vault.
+ * Returns true if the vault is paused, false if it is active.
+ *
+ * Closes #685
+ */
+export async function readPaused(contractId: string): Promise<boolean> {
+  const value = await simulateRead<boolean>(contractId, "is_paused");
+  return Boolean(value);
+}
+
+/**
+ * Read the cooperator address for the vault.
+ * Returns a Stellar address string.
+ *
+ * Closes #686
+ */
+export async function readCooperator(contractId: string): Promise<string> {
+  const raw = await simulateRead<string | Record<string, unknown>>(contractId, "cooperator");
+  return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+}
+
+/**
+ * Read the minimum deposit amount for the vault.
+ * Returns 0n if no minimum is set, or the minimum amount as a bigint.
+ *
+ * Closes #687
+ */
+export async function readMinDeposit(contractId: string): Promise<bigint> {
+  const value = await simulateRead<bigint>(contractId, "min_deposit");
+  return BigInt(value ?? 0n);
+}
+
+/**
+ * Read the operator approval threshold for multi-sig operations.
+ * Returns the current threshold as a number.
+ *
+ * Closes #684
+ */
+export async function readOperatorThreshold(contractId: string): Promise<number> {
+  const value = await simulateRead<number>(contractId, "operator_threshold");
+  return Number(value ?? 0);
+}
+
+export async function readFundingTarget(contractId: string): Promise<bigint> {
+  const value = await simulateRead<bigint>(contractId, "funding_target");
+  const result = BigInt(value);
+  if (result < 0n) {
+    throw new Error(`readFundingTarget: unexpected negative value ${result}`);
+  }
+  return result;
+}
+
+/**
+ * Read the vault symbol (share token symbol) from the contract.
+ * Returns a string representing the share token symbol.
+ */
+export async function readVaultSymbol(contractId: string): Promise<string> {
+  const raw = await simulateRead<string | Record<string, unknown>>(contractId, "symbol");
+  return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+}
+
+/**
+ * Read the early redemption fee in basis points from the contract.
+ * Returns a number representing the fee as basis points (e.g., 100 = 1%).
+ */
+export async function readEarlyRedemptionFeeBps(contractId: string): Promise<number> {
+  const value = await simulateRead<number>(contractId, "early_redemption_fee_bps");
+  return Number(value ?? 0);
+}
+
+/**
+ * Read the funding deadline timestamp (unix seconds) from the contract.
+ * Returns 0n when no deadline is configured.
+ */
+export async function readFundingDeadline(contractId: string): Promise<bigint> {
+  const value = await simulateRead<bigint | number>(contractId, "funding_deadline");
+  const result = BigInt(value ?? 0n);
+  if (result < 0n) {
+    throw new Error(`readFundingDeadline: unexpected negative value ${result}`);
+  }
+  return result;
+}
+
+/**
+ * Read the vault name (share token name) from the contract.
+ * Returns a string representing the share token name.
+ */
+export async function readVaultName(contractId: string): Promise<string> {
+  const raw = await simulateRead<string | Record<string, unknown>>(contractId, "name");
+  return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
 }

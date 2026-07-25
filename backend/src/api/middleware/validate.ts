@@ -6,7 +6,7 @@ import { z } from "zod";
 export const stellarAddressSchema = z
   .string()
   .length(56)
-  .regex(/^G[A-Z2-7]{54}$/, "Invalid Stellar address format");
+  .regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar address format");
 
 export function validateBody(schema: ZodSchema) {
   return (req: Request, res: Response, next: NextFunction) => {

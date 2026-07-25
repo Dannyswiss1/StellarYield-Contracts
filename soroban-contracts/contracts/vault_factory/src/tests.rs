@@ -113,6 +113,9 @@ fn inject_vault(e: &Env, factory_id: &Address, active: bool) -> Address {
         symbol: String::from_str(e, "TV"),
         active,
         created_at: e.ledger().timestamp(),
+        operator_fee_bps: 0,
+        maturity_date: 0,
+        expected_apy: 0,
     };
 
     // Write inside the factory contract context so storage keys resolve
@@ -1145,6 +1148,190 @@ fn test_get_all_vaults_returns_vaults_in_creation_order() {
     assert_eq!(client.get_vault_count(), 4);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// get_vaults_by_asset
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// get_vaults_by_asset returns only vaults whose asset matches the query.
+///
+/// Two vaults share asset_a; one vault uses asset_b. The function must return
+/// exactly the two asset_a vaults with no contamination from asset_b.
+#[test]
+fn test_get_vaults_by_asset_returns_only_matching_vaults() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (factory_id, _) = setup_factory(&e);
+    let client = VaultFactoryClient::new(&e, &factory_id);
+
+    let asset_a = Address::generate(&e);
+    let asset_b = Address::generate(&e);
+
+    let v1 = Address::generate(&e);
+    let v2 = Address::generate(&e);
+    let v3 = Address::generate(&e);
+
+    let make_info = |vault: Address, asset: Address, name: &str, sym: &str| VaultInfo {
+        vault: vault.clone(),
+        asset,
+        vault_type: VaultType::SingleRwa,
+        name: String::from_str(&e, name),
+        symbol: String::from_str(&e, sym),
+        active: true,
+        created_at: e.ledger().timestamp(),
+        operator_fee_bps: 0,
+        maturity_date: 0,
+        expected_apy: 0,
+    };
+
+    e.as_contract(&factory_id, || {
+        put_vault_info(&e, &v1, make_info(v1.clone(), asset_a.clone(), "Vault A1", "A1"));
+        register_vault(&e, v1.clone());
+        put_vault_info(&e, &v2, make_info(v2.clone(), asset_a.clone(), "Vault A2", "A2"));
+        register_vault(&e, v2.clone());
+        put_vault_info(&e, &v3, make_info(v3.clone(), asset_b.clone(), "Vault B1", "B1"));
+        register_vault(&e, v3.clone());
+    });
+
+    // asset_a query must return exactly v1 and v2.
+    let result = client.get_vaults_by_asset(&asset_a);
+    assert_eq!(result.len(), 2, "must return exactly 2 vaults for asset_a");
+    assert!(result.contains(v1.clone()), "v1 must be in the result");
+    assert!(result.contains(v2.clone()), "v2 must be in the result");
+    assert!(!result.contains(v3.clone()), "v3 (asset_b) must not be in the result");
+
+    // asset_b query must return only v3.
+    let result_b = client.get_vaults_by_asset(&asset_b);
+    assert_eq!(result_b.len(), 1);
+    assert_eq!(result_b.get(0).unwrap(), v3);
+
+    // Unknown asset must return empty.
+    let unknown = Address::generate(&e);
+    let result_empty = client.get_vaults_by_asset(&unknown);
+    assert_eq!(result_empty.len(), 0, "unknown asset must return empty vec");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// get_registry_stats
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// get_registry_stats returns correct total/active counts and the latest vault.
+///
+/// Verifies:
+/// - total_vaults matches the number of injected vaults
+/// - active_vaults counts only the active ones
+/// - latest_vault points to the last-injected vault
+/// - counts stay accurate after a vault is deactivated via set_vault_status
+#[test]
+fn test_get_registry_stats_reflects_live_state() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (factory_id, admin) = setup_factory(&e);
+    let client = VaultFactoryClient::new(&e, &factory_id);
+
+    // Empty registry.
+    let stats = client.get_registry_stats();
+    assert_eq!(stats.total_vaults, 0);
+    assert_eq!(stats.active_vaults, 0);
+    assert!(
+        stats.latest_vault.is_none(),
+        "latest_vault must be None when registry is empty"
+    );
+
+    // Add 3 vaults: 2 active, 1 inactive.
+    inject_vault(&e, &factory_id, true);
+    inject_vault(&e, &factory_id, false);
+    let last = inject_vault(&e, &factory_id, true);
+
+    let stats = client.get_registry_stats();
+    assert_eq!(stats.total_vaults, 3, "total must count all vaults");
+    assert_eq!(stats.active_vaults, 2, "active count must match active flag");
+    assert_eq!(
+        stats.latest_vault.unwrap(),
+        last,
+        "latest_vault must be the last-inserted vault"
+    );
+
+    // Deactivate one active vault — active count must drop to 1.
+    client.set_vault_status(&admin, &last, &false);
+    let stats = client.get_registry_stats();
+    assert_eq!(
+        stats.total_vaults, 3,
+        "total must be unchanged after deactivation"
+    );
+    assert_eq!(
+        stats.active_vaults, 1,
+        "active count must reflect deactivation"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// vault_exists_by_name_symbol
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// vault_exists_by_name_symbol returns the vault address on an exact
+/// name+symbol match, and None for unknown or partial matches.
+///
+/// Partial match cases tested:
+/// - correct name, wrong symbol → None
+/// - correct symbol, wrong name → None
+/// - both unknown               → None
+#[test]
+fn test_vault_exists_by_name_symbol_exact_match_only() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (factory_id, _) = setup_factory(&e);
+    let client = VaultFactoryClient::new(&e, &factory_id);
+
+    let vault = Address::generate(&e);
+    let info = VaultInfo {
+        vault: vault.clone(),
+        asset: Address::generate(&e),
+        vault_type: VaultType::SingleRwa,
+        name: String::from_str(&e, "US T-Bill Vault"),
+        symbol: String::from_str(&e, "syUSTB"),
+        active: true,
+        created_at: e.ledger().timestamp(),
+        operator_fee_bps: 0,
+        maturity_date: 0,
+        expected_apy: 0,
+    };
+    e.as_contract(&factory_id, || {
+        put_vault_info(&e, &vault, info);
+        register_vault(&e, vault.clone());
+    });
+
+    // Exact match must return the vault address.
+    let found = client.vault_exists_by_name_symbol(
+        &String::from_str(&e, "US T-Bill Vault"),
+        &String::from_str(&e, "syUSTB"),
+    );
+    assert_eq!(found, Some(vault.clone()), "exact name+symbol must be found");
+
+    // Right name, wrong symbol — must return None.
+    let wrong_symbol = client.vault_exists_by_name_symbol(
+        &String::from_str(&e, "US T-Bill Vault"),
+        &String::from_str(&e, "WRONG"),
+    );
+    assert!(wrong_symbol.is_none(), "mismatched symbol must return None");
+
+    // Right symbol, wrong name — must return None.
+    let wrong_name = client.vault_exists_by_name_symbol(
+        &String::from_str(&e, "WRONG NAME"),
+        &String::from_str(&e, "syUSTB"),
+    );
+    assert!(wrong_name.is_none(), "mismatched name must return None");
+
+    // Completely unknown pair — must return None.
+    let unknown = client.vault_exists_by_name_symbol(
+        &String::from_str(&e, "Ghost Vault"),
+        &String::from_str(&e, "GHV"),
+    );
+    assert!(unknown.is_none(), "unknown name+symbol must return None");
+}
+
 #[test]
 fn test_list_recent_vaults_returns_newest_first() {
     let e = Env::default();
@@ -1172,4 +1359,19 @@ fn test_list_recent_vaults_returns_newest_first() {
     assert_eq!(all_recent.get(1).unwrap(), v4);
     assert_eq!(all_recent.get(2).unwrap(), v3);
     assert_eq!(all_recent.get(3).unwrap(), v2);
+}
+
+#[test]
+fn test_default_operator_fee_bps_returns_constructor_default() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (factory_id, _) = setup_factory(&e);
+    let client = VaultFactoryClient::new(&e, &factory_id);
+
+    assert_eq!(
+        client.default_operator_fee_bps(),
+        200u32,
+        "default_operator_fee_bps must return 200 (2%) as set in the constructor"
+    );
 }

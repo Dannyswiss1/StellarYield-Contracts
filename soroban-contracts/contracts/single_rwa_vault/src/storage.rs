@@ -147,6 +147,12 @@ pub enum Key {
 
     // --- Operator fee ---
     OpFee,
+
+    // --- Lock-up period ---
+    /// Global lock-up duration in seconds (set at init, updatable by admin).
+    LockUpPeriod,
+    /// Per-user timestamp of last deposit (used to enforce lock-up).
+    DepositTimestamp(Address),
 }
 
 // Manual serialization for `Key`: unit variants use a bare `u32` tag; any key that
@@ -174,6 +180,7 @@ const K_TAG_HAS_CLM_EMG: u32 = 217;
 const K_TAG_TLK_ACT: u32 = 218;
 const K_TAG_TRANSFER_EXEMPT: u32 = 219;
 const K_TAG_YIELD_SHORTFALL: u32 = 220;
+const K_TAG_DEPOSIT_TIMESTAMP: u32 = 221;
 
 impl soroban_sdk::IntoVal<Env, soroban_sdk::Val> for Key {
     fn into_val(&self, env: &Env) -> soroban_sdk::Val {
@@ -199,6 +206,7 @@ impl soroban_sdk::IntoVal<Env, soroban_sdk::Val> for Key {
             Key::HasClmEmg(a) => (K_TAG_HAS_CLM_EMG, a.clone()).into_val(env),
             Key::TlkAct(n) => (K_TAG_TLK_ACT, *n).into_val(env),
             Key::YieldShortfall(a) => (K_TAG_YIELD_SHORTFALL, a.clone()).into_val(env),
+            Key::DepositTimestamp(a) => (K_TAG_DEPOSIT_TIMESTAMP, a.clone()).into_val(env),
 
             Key::ShareName => 0u32.into_val(env),
             Key::ShrSymb => 1u32.into_val(env),
@@ -240,6 +248,7 @@ impl soroban_sdk::IntoVal<Env, soroban_sdk::Val> for Key {
             Key::TlkDelay => 50u32.into_val(env),
             Key::TlkCount => 51u32.into_val(env),
             Key::OpFee => 54u32.into_val(env),
+            Key::LockUpPeriod => 55u32.into_val(env),
         }
     }
 }
@@ -273,6 +282,7 @@ impl soroban_sdk::TryFromVal<Env, soroban_sdk::Val> for Key {
                 K_TAG_TRANSFER_EXEMPT => Key::TransferExempt(a),
                 K_TAG_HAS_CLM_EMG => Key::HasClmEmg(a),
                 K_TAG_YIELD_SHORTFALL => Key::YieldShortfall(a),
+                K_TAG_DEPOSIT_TIMESTAMP => Key::DepositTimestamp(a),
                 _ => return Err(soroban_sdk::Error::from_contract_error(1)),
             });
         }
@@ -332,6 +342,7 @@ impl soroban_sdk::TryFromVal<Env, soroban_sdk::Val> for Key {
             50 => Ok(Key::TlkDelay),
             51 => Ok(Key::TlkCount),
             54 => Ok(Key::OpFee),
+            55 => Ok(Key::LockUpPeriod),
             100 => Ok(Key::YldVstPer),
             _ => Err(soroban_sdk::Error::from_contract_error(1)),
         }
@@ -1391,4 +1402,35 @@ pub fn delete_yield_shortfall(e: &Env, user: &Address) {
     e.storage()
         .persistent()
         .remove(&Key::YieldShortfall(user.clone()));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lock-up period storage helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns the global lock-up period in seconds. 0 means no lock-up.
+pub fn get_lock_up_period(e: &Env) -> u64 {
+    e.storage().instance().get(&Key::LockUpPeriod).unwrap_or(0)
+}
+
+/// Sets the global lock-up period in seconds.
+pub fn put_lock_up_period(e: &Env, val: u64) {
+    e.storage().instance().set(&Key::LockUpPeriod, &val);
+}
+
+/// Returns the timestamp of the user's last deposit (0 if none).
+pub fn get_deposit_timestamp(e: &Env, addr: &Address) -> u64 {
+    e.storage()
+        .persistent()
+        .get(&Key::DepositTimestamp(addr.clone()))
+        .unwrap_or(0)
+}
+
+/// Records the timestamp of the user's most recent deposit.
+pub fn put_deposit_timestamp(e: &Env, addr: &Address, timestamp: u64) {
+    let key = Key::DepositTimestamp(addr.clone());
+    e.storage().persistent().set(&key, &timestamp);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
 }
