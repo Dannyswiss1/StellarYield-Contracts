@@ -101,6 +101,19 @@ export async function getUserYieldHistory(
   }
 }
 
+export async function getUserYieldSummary(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const summary = await userService.getUserYieldSummary(String(req.params["address"]));
+    res.json(summary);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getUserKycHistory(req: Request, res: Response, next: NextFunction) {
   try {
     const address = String(req.params["address"]);
