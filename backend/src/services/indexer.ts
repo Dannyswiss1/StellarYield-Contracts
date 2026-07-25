@@ -14,6 +14,7 @@ import { UserService } from "./user.js";
 import { NotificationService } from "./notifications.js";
 import { indexerEventsProcessedTotal, indexerLastLedger } from "./metrics.js";
 import { cacheDel } from "../cache/redis.js";
+import { sseManager } from "./sseManager.js";
 
 // ── Upstream helpers ───────────────────────────────────────────────────────────
 
@@ -200,6 +201,7 @@ export class Indexer {
   }
 
   private async tickStateOnly(): Promise<void> {
+    const startTime = Date.now();
     const server = getSorobanRpc();
 
     let latestLedger: number;
@@ -221,9 +223,17 @@ export class Indexer {
     await this.saveLastIndexedLedger(latestLedger);
     logger.info({ ledger: latestLedger }, "state-only tick complete");
     this.lastTickAt = new Date();
+
+    const tickDurationMs = Date.now() - startTime;
+    sseManager.broadcastIndexerProgress({
+      lastLedger: this.lastLedger,
+      eventsProcessed: 0,
+      tickDurationMs,
+    });
   }
 
   async tick(): Promise<void> {
+    const startTime = Date.now();
     const server = getSorobanRpc();
 
     let latestLedger: number;
@@ -279,6 +289,13 @@ export class Indexer {
     this.lastLedger = latestLedger;
     await this.persistLastLedger();
     this.lastTickAt = new Date();
+
+    const tickDurationMs = Date.now() - startTime;
+    sseManager.broadcastIndexerProgress({
+      lastLedger: this.lastLedger,
+      eventsProcessed: events.length,
+      tickDurationMs,
+    });
   }
 
   private async backfill(tipLedger: number): Promise<void> {
@@ -1188,6 +1205,12 @@ export class Indexer {
       ],
     );
     indexerEventsProcessedTotal.inc();
+    const contractId = event.contractId ?? "";
+    sseManager.broadcastVaultEvent({
+      contractId,
+      type: eventType,
+      payload: event,
+    });
   }
 
   private async persistLastLedger(): Promise<void> {
