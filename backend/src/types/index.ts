@@ -146,3 +146,33 @@ export interface OperatorLogEntry {
   ledger: number;
   timestamp: string;
 }
+
+export interface PortfolioPnlPosition {
+  contractId: string;
+  deposited: string;
+  currentValue: string;
+  gainLoss: string;
+  gainLossPercent: number;
+}
+
+export interface PortfolioPnlResponse {
+  positions: PortfolioPnlPosition[];
+}
+
+export interface IncomeForecastMonth {
+  month: string;
+  projectedYield: string;
+  vaultCount: number;
+}
+
+export interface IncomeForecastResponse {
+  months: IncomeForecastMonth[];
+}
+
+export interface AnalyticsSummary {
+  totalUsers: number;
+  totalVaults: number;
+  totalValueLocked: string;
+  totalYieldDistributed: string;
+  totalDepositors: number;
+}

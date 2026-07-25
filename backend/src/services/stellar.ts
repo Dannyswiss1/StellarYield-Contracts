@@ -300,6 +300,15 @@ export async function readEarlyRedemptionFeeBps(contractId: string): Promise<num
 }
 
 /**
+ * Read the operator fee in basis points from the contract.
+ * Returns a number representing the fee as basis points (e.g., 100 = 1%).
+ */
+export async function readOperatorFeeBps(contractId: string): Promise<number> {
+  const value = await simulateRead<number>(contractId, "operator_fee_bps");
+  return Number(value ?? 0);
+}
+
+/**
  * Read the funding deadline timestamp (unix seconds) from the contract.
  * Returns 0n when no deadline is configured.
  */

@@ -4,9 +4,11 @@ import {
   getKycBatch,
   getPortfoliosBatch,
   getUser,
+  getUserIncomeForecast,
   getUserKyc,
   getUserKycHistory,
   getUserPortfolio,
+  getUserPortfolioPnl,
   getUserShareHistory,
   getUserYieldHistory,
   getUserYieldSummary,
@@ -108,6 +110,16 @@ usersRouter.get(
   "/:address/portfolio",
   validateParams(addressParamSchema),
   getUserPortfolio,
+);
+usersRouter.get(
+  "/:address/portfolio/pnl",
+  validateParams(addressParamSchema),
+  getUserPortfolioPnl,
+);
+usersRouter.get(
+  "/:address/portfolio/income-forecast",
+  validateParams(addressParamSchema),
+  getUserIncomeForecast,
 );
 usersRouter.get(
   "/:address/stream",

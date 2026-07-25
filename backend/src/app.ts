@@ -12,6 +12,7 @@ import { usersRouter } from "./api/routes/users.js";
 import { yieldsRouter } from "./api/routes/yields.js";
 import { adminRouter } from "./api/routes/admin.js";
 import { webhooksRouter } from "./api/routes/webhooks.js";
+import { analyticsRouter } from "./api/routes/analytics.js";
 import { errorHandler } from "./api/middleware/errors.js";
 import { requestId } from "./api/middleware/requestId.js";
 import { publicLimiter, authLimiter } from "./api/middleware/rateLimit.js";
@@ -51,6 +52,7 @@ export function createApp(): Express {
   app.use("/api/v1/vaults", publicLimiter, vaultsRouter);
   app.use("/api/v1/users", publicLimiter, usersRouter);
   app.use("/api/v1/yields", publicLimiter, yieldsRouter);
+  app.use("/api/v1/analytics", publicLimiter, analyticsRouter);
   app.use("/api/v1/admin", authLimiter, adminRouter);
   app.use("/api/v1/webhooks", authLimiter, webhooksRouter);
   app.all(
