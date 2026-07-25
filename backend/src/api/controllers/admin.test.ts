@@ -12,6 +12,12 @@ vi.mock("../../services/indexerSingleton.js", () => ({
     queueBackfill: vi.fn().mockResolvedValue(undefined),
   },
 }));
+vi.mock("../../services/jobQueue.js", () => ({
+  jobQueue: {
+    getJob: vi.fn(),
+    getFailedJobs: vi.fn(),
+  },
+}));
 vi.mock("../../services/vault.js", () => ({
   VaultService: vi.fn().mockImplementation(() => ({
     listArchivedVaults: vi.fn().mockResolvedValue([]),
@@ -35,7 +41,7 @@ async function getApp() {
 }
 
 /** Hash an API key the same way the auth middleware does */
-function hashKey(plaintext: string): string {
+function _hashKey(plaintext: string): string {
   return createHash("sha256").update(plaintext).digest("hex");
 }
 
@@ -126,6 +132,104 @@ describe("Admin Controller", () => {
         totalValueLocked: "9999999",
         epochCount: 5,
       });
+    });
+  });
+
+  // ── Job status endpoint (#848) ─────────────────────────────────────────
+  describe("getJobStatus", () => {
+    it("returns 404 when job is not found", async () => {
+      const { jobQueue } = await import("../../services/jobQueue.js");
+      const { getJobStatus } = await import("./admin.js");
+      (jobQueue.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+      const req = { params: { jobId: "nonexistent" } } as any;
+      const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as any;
+      const next = vi.fn();
+
+      await getJobStatus(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ error: "NotFound", message: "Job not found" });
+    });
+
+    it("returns job details when found", async () => {
+      const { jobQueue } = await import("../../services/jobQueue.js");
+      const { getJobStatus } = await import("./admin.js");
+      (jobQueue.getJob as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "abc-123",
+        name: "webhook-deliver",
+        state: "completed",
+        createdOn: new Date("2025-01-01"),
+        completedOn: new Date("2025-01-01"),
+        output: { success: true },
+      });
+
+      const req = { params: { jobId: "abc-123" } } as any;
+      const res = { json: vi.fn() } as any;
+      const next = vi.fn();
+
+      await getJobStatus(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        id: "abc-123",
+        name: "webhook-deliver",
+        state: "completed",
+        createdAt: new Date("2025-01-01"),
+        completedOn: new Date("2025-01-01"),
+        output: { success: true },
+      });
+    });
+  });
+
+  // ── Dead letter queue endpoint (#850) ──────────────────────────────────
+  describe("getFailedJobs", () => {
+    it("returns list of failed jobs", async () => {
+      const { jobQueue } = await import("../../services/jobQueue.js");
+      const { getFailedJobs } = await import("./admin.js");
+      (jobQueue.getFailedJobs as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          id: "fail-1",
+          name: "webhook-deliver",
+          data: { webhookId: 1 },
+          state: "failed",
+          createdOn: new Date("2025-01-01"),
+          completedOn: new Date("2025-01-01"),
+          output: { error: "timeout" },
+        },
+      ]);
+
+      const req = {} as any;
+      const res = { json: vi.fn() } as any;
+      const next = vi.fn();
+
+      await getFailedJobs(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        data: [
+          {
+            id: "fail-1",
+            name: "webhook-deliver",
+            payload: { webhookId: 1 },
+            createdAt: new Date("2025-01-01"),
+            completedAt: new Date("2025-01-01"),
+            output: { error: "timeout" },
+          },
+        ],
+      });
+    });
+
+    it("returns empty array when no failed jobs exist", async () => {
+      const { jobQueue } = await import("../../services/jobQueue.js");
+      const { getFailedJobs } = await import("./admin.js");
+      (jobQueue.getFailedJobs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+      const req = {} as any;
+      const res = { json: vi.fn() } as any;
+      const next = vi.fn();
+
+      await getFailedJobs(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({ data: [] });
     });
   });
 });

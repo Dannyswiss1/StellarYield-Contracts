@@ -4,12 +4,16 @@ import {
   getKycBatch,
   getPortfoliosBatch,
   getUser,
+  getUserIncomeForecast,
   getUserKyc,
   getUserKycHistory,
   getUserPortfolio,
+  getUserPortfolioPnl,
   getUserShareHistory,
   getUserYieldHistory,
+  getUserYieldSummary,
   searchUsers,
+  streamUserPositions,
 } from "../controllers/users.js";
 import {
   validateBody,
@@ -85,6 +89,11 @@ usersRouter.get(
   getUserYieldHistory,
 );
 usersRouter.get(
+  "/:address/yield-summary",
+  validateParams(addressParamSchema),
+  getUserYieldSummary,
+);
+usersRouter.get(
   "/:address/kyc-history",
   validateParams(addressParamSchema),
   validateQuery(kycHistoryQuerySchema),
@@ -101,4 +110,19 @@ usersRouter.get(
   "/:address/portfolio",
   validateParams(addressParamSchema),
   getUserPortfolio,
+);
+usersRouter.get(
+  "/:address/portfolio/pnl",
+  validateParams(addressParamSchema),
+  getUserPortfolioPnl,
+);
+usersRouter.get(
+  "/:address/portfolio/income-forecast",
+  validateParams(addressParamSchema),
+  getUserIncomeForecast,
+);
+usersRouter.get(
+  "/:address/stream",
+  validateParams(addressParamSchema),
+  streamUserPositions,
 );

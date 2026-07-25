@@ -31,10 +31,20 @@ export class YieldService {
       yield_amount: string;
       total_shares: string;
       distributed_at: Date | null;
+      net_yield: string | null;
     }>(
-      `SELECT e.id, e.vault_id, e.epoch, e.yield_amount, e.total_shares, e.distributed_at
+      `SELECT e.id, e.vault_id, e.epoch, e.yield_amount, e.total_shares, e.distributed_at,
+              (ie.payload->>'netYield') AS net_yield
        FROM epochs e
        JOIN vaults v ON e.vault_id = v.id
+       LEFT JOIN LATERAL (
+         SELECT payload FROM indexed_events
+         WHERE contract_id = v.contract_id
+           AND event_type = 'yield_distributed'
+           AND (payload->>'epoch')::int = e.epoch
+         ORDER BY created_at DESC
+         LIMIT 1
+       ) ie ON TRUE
        WHERE v.contract_id = $1
        ORDER BY e.epoch ASC`,
       [contractId],
@@ -47,6 +57,7 @@ export class YieldService {
       yieldAmount: row.yield_amount,
       totalShares: row.total_shares,
       distributedAt: row.distributed_at,
+      netYield: row.net_yield ?? row.yield_amount,
     }));
 
     await cacheSet(cacheKey, epochs, EPOCHS_CACHE_TTL);

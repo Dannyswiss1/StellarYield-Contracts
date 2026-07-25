@@ -9,8 +9,7 @@ export async function getUser(req: Request, res: Response, next: NextFunction) {
   try {
     const user = await userService.getUser(String(req.params["address"]));
     if (!user) {
-      res.status(404).json({ error: "NotFound", message: "User not found" });
-      return;
+      throw new AppError(ErrorCode.USER_NOT_FOUND, "User not found", 404);
     }
     res.json(user);
   } catch (err) {
@@ -28,6 +27,41 @@ export async function getUserPortfolio(
       String(req.params["address"]),
     );
     res.json(portfolio);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserPortfolioPnl(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const pnl = await userService.getUserPortfolioPnl(
+      String(req.params["address"]),
+    );
+    res.json(pnl);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserIncomeForecast(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const address = String(req.params["address"]);
+    const monthsParam = req.query["months"];
+    const months =
+      typeof monthsParam === "string" && /^\d+$/.test(monthsParam)
+        ? Math.min(12, Math.max(1, parseInt(monthsParam, 10)))
+        : 6;
+
+    const forecast = await userService.getUserIncomeForecast(address, months);
+    res.json(forecast);
   } catch (err) {
     next(err);
   }
@@ -96,6 +130,19 @@ export async function getUserYieldHistory(
     const pageSize = Number(req.query["pageSize"] ?? 20);
     const result = await userService.getUserYieldHistory(address, page, pageSize);
     res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserYieldSummary(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const summary = await userService.getUserYieldSummary(String(req.params["address"]));
+    res.json(summary);
   } catch (err) {
     next(err);
   }

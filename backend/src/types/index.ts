@@ -42,6 +42,8 @@ export interface User {
   id: number;
   address: string;
   kycVerified: boolean;
+  amlFlagged: boolean;
+  amlFlaggedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -97,6 +99,7 @@ export interface Epoch {
   yieldAmount: string;
   totalShares: string;
   distributedAt: Date | null;
+  netYield: string;
 }
 
 export interface IndexedEvent {
@@ -144,4 +147,34 @@ export interface OperatorLogEntry {
   callerAddress: string;
   ledger: number;
   timestamp: string;
+}
+
+export interface PortfolioPnlPosition {
+  contractId: string;
+  deposited: string;
+  currentValue: string;
+  gainLoss: string;
+  gainLossPercent: number;
+}
+
+export interface PortfolioPnlResponse {
+  positions: PortfolioPnlPosition[];
+}
+
+export interface IncomeForecastMonth {
+  month: string;
+  projectedYield: string;
+  vaultCount: number;
+}
+
+export interface IncomeForecastResponse {
+  months: IncomeForecastMonth[];
+}
+
+export interface AnalyticsSummary {
+  totalUsers: number;
+  totalVaults: number;
+  totalValueLocked: string;
+  totalYieldDistributed: string;
+  totalDepositors: number;
 }

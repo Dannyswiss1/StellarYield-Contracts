@@ -13,6 +13,7 @@ import { UserService } from "./user.js";
 import { NotificationService } from "./notifications.js";
 import { indexerEventsProcessedTotal, indexerLastLedger } from "./metrics.js";
 import { cacheDel } from "../cache/redis.js";
+import { sseService } from "./sse.js";
 
 // ── Upstream helpers ───────────────────────────────────────────────────────────
 
@@ -119,11 +120,12 @@ export async function storeIndexedEvent(
   eventType: string,
   ev: any,
   payload: Record<string, unknown>,
+  parsedData?: Record<string, unknown>,
 ): Promise<void> {
   await query(
-    `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [ev.ledger, ev.txHash, contractId, eventType, JSON.stringify(payload)],
+    `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload, parsed_data)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [ev.ledger, ev.txHash, contractId, eventType, JSON.stringify(payload), parsedData ? JSON.stringify(parsedData) : null],
   );
 }
 
@@ -380,8 +382,27 @@ export class Indexer {
 
     const yieldDist = parseYieldDistributedEvent(event);
     if (yieldDist) {
-      await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
-      await this.recordEvent(event, "yield_distributed");
+      const feeResult = await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
+      // Store payload with netYield so GET /epochs can read it via lateral join (#792)
+      await query(
+        `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
+         VALUES ($1, $2, $3, 'yield_distributed', $4)
+         ON CONFLICT DO NOTHING`,
+        [
+          event.ledger ?? 0,
+          event.id ?? event.txHash ?? "",
+          event.contractId ?? "",
+          JSON.stringify({
+            epoch: yieldDist.epoch,
+            amount: yieldDist.amount.toString(),
+            netYield: feeResult.netYield,
+            operatorFee: feeResult.operatorFee,
+          }),
+        ],
+      );
+      indexerEventsProcessedTotal.inc();
+      const parsedData = await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
+      await this.recordEvent(event, "yield_distributed", parsedData);
       try {
         await this.notificationService?.notify("yield_distributed", yieldDist as any);
       } catch (e) {
@@ -517,14 +538,45 @@ export class Indexer {
     const yieldClaimed = parseYieldClaimedEvent(event);
     if (yieldClaimed) {
       await this.handleYieldClaimed(event.contractId ?? "", yieldClaimed.user, yieldClaimed.epoch);
-      await this.recordEvent(event, "yield_claimed");
+      await query(
+        `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
+         VALUES ($1, $2, $3, 'yield_claimed', $4)
+         ON CONFLICT DO NOTHING`,
+        [
+          event.ledger ?? 0,
+          event.id ?? event.txHash ?? "",
+          event.contractId ?? "",
+          JSON.stringify({
+            user: yieldClaimed.user,
+            amount: yieldClaimed.amount.toString(),
+            epoch: yieldClaimed.epoch,
+          }),
+        ],
+      );
+      indexerEventsProcessedTotal.inc();
       return;
     }
 
     const yieldClaimedPartial = parseYieldClaimedPartialEvent(event);
     if (yieldClaimedPartial) {
       await this.handleYieldClaimed(event.contractId ?? "", yieldClaimedPartial.user, yieldClaimedPartial.epoch);
-      await this.recordEvent(event, "yield_claimed_partial");
+      await query(
+        `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
+         VALUES ($1, $2, $3, 'yield_claimed_partial', $4)
+         ON CONFLICT DO NOTHING`,
+        [
+          event.ledger ?? 0,
+          event.id ?? event.txHash ?? "",
+          event.contractId ?? "",
+          JSON.stringify({
+            user: yieldClaimedPartial.user,
+            amount: yieldClaimedPartial.claimed.toString(),
+            shortfall: yieldClaimedPartial.shortfall.toString(),
+            epoch: yieldClaimedPartial.epoch,
+          }),
+        ],
+      );
+      indexerEventsProcessedTotal.inc();
       return;
     }
 
@@ -539,6 +591,13 @@ export class Indexer {
     if (earlyCancelled) {
       await this.handleEarlyRedemptionCancelled(event.contractId ?? "", earlyCancelled);
       await this.recordEvent(event, "early_redemption_cancelled");
+      return;
+    }
+
+    const feeUpdated = parseOperatorFeeUpdatedEvent(event);
+    if (feeUpdated) {
+      await this.handleOperatorFeeUpdated(event.contractId ?? "", feeUpdated);
+      await this.recordEvent(event, "operator_fee_updated");
       return;
     }
 
@@ -690,27 +749,44 @@ export class Indexer {
       { contractId, owner: withdraw.owner, shares: withdraw.shares.toString() },
       "Processed withdraw event",
     );
+    
+    // Get updated position and emit SSE event
+    const positionResult = await query<{ shares: string; deposited: string }>(
+      `SELECT shares, deposited FROM user_vault_positions uvp
+       JOIN vaults v ON uvp.vault_id = v.id
+       WHERE uvp.user_address = $1 AND v.contract_id = $2`,
+      [withdraw.owner, contractId],
+    );
+    if (positionResult.length > 0) {
+      const { shares, deposited } = positionResult[0];
+      userServiceInstance.emitPositionUpdate(withdraw.owner, contractId, shares, deposited);
+    }
   }
 
   private async handleYieldDistributed(
     contractId: string,
     yieldDist: { epoch: number; amount: bigint; timestamp: bigint },
-  ): Promise<void> {
-    const vaultRow = await query<{ id: number }>(
-      "SELECT id FROM vaults WHERE contract_id = $1",
+  ): Promise<{ netYield: string; operatorFee: string }> {
+    const vaultRow = await query<{ id: number; operator_fee_bps: number }>(
+      "SELECT id, operator_fee_bps FROM vaults WHERE contract_id = $1",
       [contractId],
     );
     if (vaultRow.length === 0) {
       logger.warn({ contractId }, "yield_distributed for unknown vault — skipping epoch record");
-      return;
+      return { netYield: yieldDist.amount.toString(), operatorFee: "0" };
     }
     const vaultId = vaultRow[0].id;
+    const operatorFeeBps = vaultRow[0].operator_fee_bps ?? 0;
 
     const supplyRow = await query<{ total_supply: string }>(
       "SELECT total_supply FROM vaults WHERE id = $1",
       [vaultId],
     );
     const totalShares = supplyRow[0]?.total_supply ?? "0";
+
+    const grossAmount = yieldDist.amount;
+    const operatorFee = (grossAmount * BigInt(operatorFeeBps)) / 10000n;
+    const netYield = grossAmount - operatorFee;
 
     await query(
       `INSERT INTO epochs (vault_id, epoch, yield_amount, total_shares, distributed_at)
@@ -720,7 +796,6 @@ export class Indexer {
     );
     await this.recordTvlSnapshot(contractId);
 
-    // Snapshot every active shareholder's balance for this epoch.
     await query(
       `INSERT INTO share_balance_snapshots (vault_id, user_address, epoch, shares, recorded_at)
        SELECT $1, uvp.user_address, $2, uvp.shares, NOW()
@@ -730,10 +805,33 @@ export class Indexer {
       [vaultId, yieldDist.epoch],
     );
 
+    // #793: Fire vault.fee_earned webhook
+    try {
+      await this.notificationService?.notify("vault.fee_earned", {
+        contractId,
+        epoch: yieldDist.epoch,
+        operatorFee: operatorFee.toString(),
+        netYield: netYield.toString(),
+      });
+    } catch (e) {
+      logger.warn({ err: e }, "NotificationService.notify failed for vault.fee_earned");
+    }
+
     logger.info(
       { contractId, epoch: yieldDist.epoch, amount: yieldDist.amount.toString() },
       "Processed yield_distributed event",
     );
+    return { netYield: netYield.toString(), operatorFee: operatorFee.toString() };
+
+    sseService.broadcastEpochRecorded(contractId, {
+      type: "epoch_recorded",
+      contractId,
+      epoch: yieldDist.epoch,
+      yieldAmount: yieldDist.amount.toString(),
+      timestamp: new Date(Number(yieldDist.timestamp) * 1000).toISOString(),
+    });
+
+    return parsedData;
   }
 
   private async handleVaultCreated(
@@ -851,13 +949,47 @@ export class Indexer {
     }
     const vaultId = vaultRow[0].id;
 
-    await query(
-      `UPDATE redemption_requests SET processed = TRUE
-       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE`,
+    // Look up the redemption request to get shares for gross-asset computation
+    const reqRows = await query<{ shares: string }>(
+      `SELECT shares FROM redemption_requests
+       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE
+       LIMIT 1`,
       [vaultId, event.requestId],
     );
+
+    let feeRevenue = 0;
+    let grossAssets = 0;
+
+    if (reqRows.length > 0) {
+      const shares = toBigIntOrZero(reqRows[0].shares);
+
+      const vaultState = await query<{ total_assets: string; total_supply: string }>(
+        "SELECT total_assets::text, total_supply::text FROM vaults WHERE id = $1",
+        [vaultId],
+      );
+
+      if (vaultState.length > 0) {
+        const totalAssets = toBigIntOrZero(vaultState[0].total_assets);
+        const totalSupply = toBigIntOrZero(vaultState[0].total_supply);
+
+        // Compute gross assets at current exchange rate (1:1 when no supply)
+        const gross = totalSupply > 0n
+          ? (shares * totalAssets) / totalSupply
+          : shares;
+
+        grossAssets = Number(gross);
+        feeRevenue = grossAssets - Number(event.netAssets);
+        if (feeRevenue < 0) feeRevenue = 0;
+      }
+    }
+
+    await query(
+      `UPDATE redemption_requests SET processed = TRUE, fee_revenue = $3, gross_assets = $4
+       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE`,
+      [vaultId, event.requestId, feeRevenue, grossAssets],
+    );
     logger.info(
-      { contractId, user: event.user, requestId: event.requestId },
+      { contractId, user: event.user, requestId: event.requestId, feeRevenue },
       "Processed early_redemption_processed event",
     );
   }
@@ -1039,42 +1171,35 @@ export class Indexer {
     );
   }
 
-  private async handleOperatorAdded(
+  // #790: Handle operator fee rate change event
+  private async handleOperatorFeeUpdated(
     contractId: string,
-    ev: { operator: string; timestamp: bigint },
+    ev: { caller: string; oldFeeBps: number; newFeeBps: number },
   ): Promise<void> {
-    const vaultRow = await query<{ id: number }>(
-      "SELECT id FROM vaults WHERE contract_id = $1",
+    const vaultRow = await query<{ id: number; operator_fee_bps: number }>(
+      "SELECT id, operator_fee_bps FROM vaults WHERE contract_id = $1",
       [contractId],
     );
-    if (vaultRow.length === 0) return;
+    if (vaultRow.length === 0) {
+      logger.warn({ contractId }, "operator_fee_updated for unknown vault — skipping");
+      return;
+    }
     const vaultId = vaultRow[0].id;
-    const assignedAt = new Date(Number(ev.timestamp) * 1000);
-    await query(
-      `INSERT INTO vault_operators (vault_id, address, active, assigned_at, updated_at)
-       VALUES ($1, $2, TRUE, $3, NOW())
-       ON CONFLICT (vault_id, address) DO UPDATE SET active = TRUE, updated_at = NOW()`,
-      [vaultId, ev.operator, assignedAt],
-    );
-    logger.info({ contractId, operator: ev.operator }, "Processed op_add event");
-  }
 
-  private async handleOperatorRemoved(
-    contractId: string,
-    ev: { operator: string },
-  ): Promise<void> {
-    const vaultRow = await query<{ id: number }>(
-      "SELECT id FROM vaults WHERE contract_id = $1",
-      [contractId],
-    );
-    if (vaultRow.length === 0) return;
-    const vaultId = vaultRow[0].id;
     await query(
-      `UPDATE vault_operators SET active = FALSE, updated_at = NOW()
-       WHERE vault_id = $1 AND address = $2`,
-      [vaultId, ev.operator],
+      `UPDATE vaults SET operator_fee_bps = $1, updated_at = NOW() WHERE id = $2`,
+      [ev.newFeeBps, vaultId],
     );
-    logger.info({ contractId, operator: ev.operator }, "Processed op_rem event");
+    await query(
+      `INSERT INTO vault_fee_history (vault_id, old_fee_bps, new_fee_bps, changed_by, recorded_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [vaultId, ev.oldFeeBps, ev.newFeeBps, ev.caller],
+    );
+    await cacheDel(`vault:${contractId}`);
+    logger.info(
+      { contractId, oldFeeBps: ev.oldFeeBps, newFeeBps: ev.newFeeBps },
+      "Processed operator_fee_updated event",
+    );
   }
 
   private async handleZkmeVerifierUpdated(
@@ -1097,10 +1222,14 @@ export class Indexer {
     logger.info({ contractId, user: ev.user, verified: ev.verified }, "Processed kyc_set event");
   }
 
-  private async recordEvent(event: any, eventType: string): Promise<void> {
+  private async recordEvent(
+    event: any,
+    eventType: string,
+    parsedData?: Record<string, unknown>,
+  ): Promise<void> {
     await query(
-      `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload, parsed_data)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING`,
       [
         event.ledger ?? 0,
@@ -1108,6 +1237,7 @@ export class Indexer {
         event.contractId ?? "",
         eventType,
         JSON.stringify(event),
+        parsedData ? JSON.stringify(parsedData) : null,
       ],
     );
     indexerEventsProcessedTotal.inc();
@@ -2143,6 +2273,50 @@ export function parseVaultRemovedEvent(rawEvent: unknown): ParsedVaultRemovedEve
     if (eventName !== "v_rem" && eventName !== "vault_removed") return null;
 
     return { contractId: String(ev["contractId"] ?? "") };
+  } catch {
+    return null;
+  }
+}
+
+// ── #790: parseOperatorFeeUpdatedEvent ───────────────────────────────────────
+
+export interface ParsedOperatorFeeUpdatedEvent {
+  caller: string;
+  oldFeeBps: number;
+  newFeeBps: number;
+}
+
+export function parseOperatorFeeUpdatedEvent(rawEvent: unknown): ParsedOperatorFeeUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "fee_upd" && eventName !== "operator_fee_updated") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+    const oldFeeBps = Number(decodeBigInt(arr[0]));
+    const newFeeBps = Number(decodeBigInt(arr[1]));
+
+    return { caller, oldFeeBps, newFeeBps };
   } catch {
     return null;
   }

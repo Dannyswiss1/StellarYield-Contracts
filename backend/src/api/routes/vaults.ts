@@ -29,6 +29,9 @@ import {
   getMaturingSoonVaults,
   getFullyFundedVaults,
   getSimilarVaults,
+  getFeeHistory,
+  getVaultFees,
+  getCooperatorFees,
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
 import { requireApiKey } from "../middleware/auth.js";
@@ -126,12 +129,18 @@ vaultsRouter.get(
   validateParams(vaultParamsSchema),
   getEarlyRedemptionFee,
 );
+// Operator fee summary per vault: GET /api/v1/vaults/:contractId/fees
+vaultsRouter.get("/:contractId/fees", validateParams(vaultParamsSchema), getVaultFees);
+// Cooperator fee breakdown: GET /api/v1/vaults/:contractId/fees/cooperator
+vaultsRouter.get("/:contractId/fees/cooperator", validateParams(vaultParamsSchema), getCooperatorFees);
 // Export vault data as CSV: GET /api/v1/vaults/:contractId/export.csv
 vaultsRouter.get("/:contractId/export.csv", validateParams(vaultParamsSchema), exportVaultCsv);
 // Operators list: GET /api/v1/vaults/:contractId/operators
 vaultsRouter.get("/:contractId/operators", validateParams(vaultParamsSchema), getVaultOperators);
 // Operator activity log: GET /api/v1/vaults/:contractId/operators/log
 vaultsRouter.get("/:contractId/operators/log", validateParams(vaultParamsSchema), getOperatorLog);
+// Fee rate history: GET /api/v1/vaults/:contractId/fees/history (#791)
+vaultsRouter.get("/:contractId/fees/history", validateParams(vaultParamsSchema), getFeeHistory);
 // Vault detail: GET /api/v1/vaults/:contractId
 vaultsRouter.get("/:contractId", validateParams(vaultParamsSchema), getVault);
 // Annual vault performance report: GET /api/v1/vaults/:contractId/report?year=2025

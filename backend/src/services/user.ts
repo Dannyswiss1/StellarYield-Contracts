@@ -5,20 +5,54 @@ import type {
   PaginatedResponse,
   YieldHistoryEntry,
   ShareBalanceHistoryEntry,
+  PortfolioPnlResponse,
+  PortfolioPnlPosition,
+  IncomeForecastResponse,
+  IncomeForecastMonth,
 } from "../types/index.js";
 import { query } from "../db/index.js";
 import { YieldService } from "./yield.js";
 
 export class UserService {
+  private emitter = new EventEmitter();
+
+  public onPositionUpdate(
+    address: string,
+    callback: (position: { vaultContractId: string; shares: string; deposited: string }) => void
+  ): () => void {
+    const listener = (data: { address: string; vaultContractId: string; shares: string; deposited: string }) => {
+      if (data.address === address) {
+        callback({
+          vaultContractId: data.vaultContractId,
+          shares: data.shares,
+          deposited: data.deposited,
+        });
+      }
+    };
+    this.emitter.on("position:updated", listener);
+    return () => this.emitter.off("position:updated", listener);
+  }
+
+  public emitPositionUpdate(
+    address: string,
+    vaultContractId: string,
+    shares: string,
+    deposited: string
+  ): void {
+    this.emitter.emit("position:updated", { address, vaultContractId, shares, deposited });
+  }
+
   async getUser(address: string): Promise<User | null> {
     const result = await query<{
       id: number;
       address: string;
       kyc_verified: boolean;
+      aml_flagged: boolean;
+      aml_flagged_at: Date | null;
       created_at: Date;
       updated_at: Date;
     }>(
-      `SELECT id, address, kyc_verified, created_at, updated_at 
+      `SELECT id, address, kyc_verified, aml_flagged, aml_flagged_at, created_at, updated_at 
        FROM users 
        WHERE address = $1
        LIMIT 1`,
@@ -34,6 +68,8 @@ export class UserService {
       id: row.id,
       address: row.address,
       kycVerified: row.kyc_verified,
+      amlFlagged: row.aml_flagged,
+      amlFlaggedAt: row.aml_flagged_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -75,6 +111,24 @@ export class UserService {
     }
 
     return totalPendingYield.toString();
+  }
+
+  async getUserYieldSummary(address: string): Promise<{
+    totalClaimed: string;
+    totalPendingYield: string;
+  }> {
+    const claimedRows = await query<{ total_claimed: string }>(
+      `SELECT COALESCE(SUM((payload->>'amount')::numeric), 0)::text AS total_claimed
+       FROM indexed_events
+       WHERE event_type IN ('yield_claimed', 'yield_claimed_partial')
+         AND (payload->>'user' = $1 OR payload->>'address' = $1)`,
+      [address],
+    );
+
+    const totalClaimed = claimedRows[0]?.total_claimed ?? "0";
+    const totalPendingYield = await this.getTotalPendingYield(address);
+
+    return { totalClaimed, totalPendingYield };
   }
 
   async getUserPortfolio(address: string): Promise<UserPortfolioResponse> {
@@ -136,6 +190,54 @@ export class UserService {
       totalPendingYield: totalPendingYield.toString(),
       totalValue,
     };
+  }
+
+  async getUserPortfolioPnl(address: string): Promise<PortfolioPnlResponse> {
+    const positions = await query<{
+      user_address: string;
+      contract_id: string;
+      shares: string;
+      deposited: string;
+      total_assets: string;
+      total_supply: string;
+    }>(
+      `SELECT uvp.user_address, v.contract_id, uvp.shares, uvp.deposited,
+              v.total_assets, v.total_supply
+       FROM user_vault_positions uvp
+       JOIN vaults v ON uvp.vault_id = v.id
+       WHERE uvp.user_address = $1 AND uvp.shares > 0
+       ORDER BY uvp.deposited DESC`,
+      [address],
+    );
+
+    const pnlPositions: PortfolioPnlPosition[] = positions.map((row) => {
+      const deposited = BigInt(row.deposited || "0");
+      const userShares = BigInt(row.shares || "0");
+      const totalAssets = BigInt(Math.round(parseFloat(row.total_assets || "0")));
+      const totalSupply = BigInt(Math.round(parseFloat(row.total_supply || "0")));
+
+      const currentValue =
+        userShares > 0n && totalSupply > 0n
+          ? (userShares * totalAssets) / totalSupply
+          : 0n;
+
+      const gainLoss = currentValue - deposited;
+
+      const gainLossPercent =
+        deposited > 0n
+          ? Number((gainLoss * 10000n) / deposited) / 100
+          : 0;
+
+      return {
+        contractId: row.contract_id,
+        deposited: deposited.toString(),
+        currentValue: currentValue.toString(),
+        gainLoss: gainLoss.toString(),
+        gainLossPercent: Math.round(gainLossPercent * 100) / 100,
+      };
+    });
+
+    return { positions: pnlPositions };
   }
 
   async getShareBalanceHistory(
@@ -246,10 +348,12 @@ export class UserService {
       id: number;
       address: string;
       kyc_verified: boolean;
+      aml_flagged: boolean;
+      aml_flagged_at: Date | null;
       created_at: Date;
       updated_at: Date;
     }>(
-      `SELECT id, address, kyc_verified, created_at, updated_at 
+      `SELECT id, address, kyc_verified, aml_flagged, aml_flagged_at, created_at, updated_at 
        FROM users 
        WHERE address ILIKE $1 
        LIMIT 20`,
@@ -260,6 +364,8 @@ export class UserService {
       id: row.id,
       address: row.address,
       kycVerified: row.kyc_verified,
+      amlFlagged: row.aml_flagged,
+      amlFlaggedAt: row.aml_flagged_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
@@ -285,7 +391,7 @@ export class UserService {
     }>(
       `SELECT contract_id, event_type, payload, created_at
        FROM indexed_events
-       WHERE event_type IN ('yield_clm', 'prt_yld')
+       WHERE event_type IN ('yield_claimed', 'yield_claimed_partial')
          AND (payload->>'user' = $1 OR payload->>'address' = $1)
        ORDER BY (payload->>'timestamp')::numeric DESC NULLS LAST, created_at DESC
        LIMIT $2 OFFSET $3`,
@@ -295,7 +401,7 @@ export class UserService {
     const countResult = await query<{ count: string }>(
       `SELECT COUNT(*)::text AS count
        FROM indexed_events
-       WHERE event_type IN ('yield_clm', 'prt_yld')
+       WHERE event_type IN ('yield_claimed', 'yield_claimed_partial')
          AND (payload->>'user' = $1 OR payload->>'address' = $1)`,
       [address],
     );
@@ -319,5 +425,131 @@ export class UserService {
     });
 
     return { data, total, page, pageSize };
+  }
+
+  async getUserIncomeForecast(
+    address: string,
+    months: number,
+  ): Promise<IncomeForecastResponse> {
+    const clampedMonths = Math.min(12, Math.max(1, months));
+
+    const positions = await query<{
+      vault_id: number;
+      contract_id: string;
+      shares: string;
+    }>(
+      `SELECT uvp.vault_id, v.contract_id, uvp.shares
+       FROM user_vault_positions uvp
+       JOIN vaults v ON uvp.vault_id = v.id
+       WHERE uvp.user_address = $1 AND uvp.shares > 0`,
+      [address],
+    );
+
+    if (positions.length === 0) {
+      const monthsResult: IncomeForecastMonth[] = [];
+      const now = new Date();
+      for (let i = 0; i < clampedMonths; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() + i + 1, 1);
+        monthsResult.push({
+          month: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+          projectedYield: "0",
+          vaultCount: 0,
+        });
+      }
+      return { months: monthsResult };
+    }
+
+    const vaultIds = positions.map((p) => p.vault_id);
+    const vaultPositionMap = new Map(
+      positions.map((p) => [p.vault_id, { shares: BigInt(p.shares), contractId: p.contract_id }]),
+    );
+
+    // Fetch epoch data for all user vaults in one query
+    const epochRows = await query<{
+      vault_id: number;
+      yield_amount: string;
+      total_shares: string;
+      distributed_at: Date;
+    }>(
+      `SELECT e.vault_id, e.yield_amount, e.total_shares, e.distributed_at
+       FROM epochs e
+       WHERE e.vault_id = ANY($1)
+       ORDER BY e.distributed_at ASC`,
+      [vaultIds],
+    );
+
+    // Compute average yield per month per vault
+    const vaultMonthlyData = new Map<
+      number,
+      { avgMonthlyYield: bigint; shareRatio: number }
+    >();
+
+    const vaultEpochs = new Map<number, typeof epochRows>();
+    for (const row of epochRows) {
+      const list = vaultEpochs.get(row.vault_id) ?? [];
+      list.push(row);
+      vaultEpochs.set(row.vault_id, list);
+    }
+
+    for (const [vaultId, epochs] of vaultEpochs) {
+      if (epochs.length === 0) continue;
+
+      const position = vaultPositionMap.get(vaultId);
+      if (!position || position.shares === 0n) continue;
+
+      const firstEpoch = epochs[0].distributed_at;
+      const lastEpoch = epochs[epochs.length - 1].distributed_at;
+
+      const totalYield = epochs.reduce(
+        (sum, e) => sum + BigInt(e.yield_amount),
+        0n,
+      );
+
+      // Time span in months
+      const spanMs = lastEpoch.getTime() - firstEpoch.getTime();
+      const spanMonths = Math.max(spanMs / (30.44 * 24 * 60 * 60 * 1000), 1);
+
+      const avgMonthlyYield = totalYield / BigInt(Math.round(spanMonths));
+
+      // Compute user's share ratio for this vault
+      const latestTotalShares = BigInt(
+        epochs[epochs.length - 1].total_shares,
+      );
+      const shareRatio =
+        latestTotalShares > 0n
+          ? Number((position.shares * 10000n) / latestTotalShares) / 10000
+          : 0;
+
+      vaultMonthlyData.set(vaultId, { avgMonthlyYield, shareRatio });
+    }
+
+    // Project yield for each month
+    const monthsResult: IncomeForecastMonth[] = [];
+    const now = new Date();
+
+    for (let i = 0; i < clampedMonths; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i + 1, 1);
+      const monthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+      let totalProjected = 0n;
+      let vaultCount = 0;
+
+      for (const [_vaultId, data] of vaultMonthlyData) {
+        const userMonthlyYield =
+          BigInt(Math.round(Number(data.avgMonthlyYield) * data.shareRatio));
+        if (userMonthlyYield > 0n) {
+          totalProjected += userMonthlyYield;
+          vaultCount++;
+        }
+      }
+
+      monthsResult.push({
+        month: monthStr,
+        projectedYield: totalProjected.toString(),
+        vaultCount,
+      });
+    }
+
+    return { months: monthsResult };
   }
 }

@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { createHash } from "crypto";
 import { z } from "zod";
 import { VaultService } from "../../services/vault.js";
-import { readTotalAssets, readVaultState, readPaused } from "../../services/stellar.js";
+import { readTotalAssets, readVaultState, readPaused, readCooperator, readCooperatorFeeBps } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
 
 const vaultService = new VaultService();
@@ -86,8 +86,7 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   try {
     const vault = await vaultService.getVault(String(req.params["contractId"]));
     if (!vault) {
-      res.status(404).json({ error: "NotFound", message: "Vault not found" });
-      return;
+      throw new AppError(ErrorCode.VAULT_NOT_FOUND, "Vault not found", 404);
     }
     const etag = `W/"${createHash("sha1").update(JSON.stringify(vault)).digest("hex")}"`;
     if (req.headers["if-none-match"] === etag) {
@@ -111,7 +110,7 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   }
 }
 
-export async function getVaultLiveState(req: Request, res: Response) {
+export async function getVaultLiveState(req: Request, res: Response, _next: NextFunction) {
   try {
     const contractId = String(req.params["contractId"]);
     const state = await readVaultState(contractId);
@@ -125,7 +124,7 @@ export async function getVaultLiveState(req: Request, res: Response) {
   }
 }
 
-export async function getVaultLiveTotalAssets(req: Request, res: Response) {
+export async function getVaultLiveTotalAssets(req: Request, res: Response, _next: NextFunction) {
   try {
     const totalAssets = await readTotalAssets(String(req.params["contractId"]));
     res.json({ totalAssets: totalAssets.toString() });
@@ -983,6 +982,49 @@ export async function getVaultOperators(req: Request, res: Response, next: NextF
 }
 
 /**
+ * GET /api/v1/vaults/:contractId/fees/history
+ *
+ * Returns all fee rate changes for a vault ordered by recorded_at DESC.
+ * Returns [] for a vault with no fee changes. (#791)
+ */
+export async function getFeeHistory(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const vaultRow = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRow.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+    const rows = await query<{
+      old_fee_bps: number;
+      new_fee_bps: number;
+      changed_by: string;
+      recorded_at: Date;
+    }>(
+      `SELECT old_fee_bps, new_fee_bps, changed_by, recorded_at
+       FROM vault_fee_history
+       WHERE vault_id = $1
+       ORDER BY recorded_at DESC`,
+      [vaultRow[0].id],
+    );
+    setCacheHeaders(res);
+    res.json(
+      rows.map((r) => ({
+        oldFeeBps: r.old_fee_bps,
+        newFeeBps: r.new_fee_bps,
+        changedBy: r.changed_by,
+        recordedAt: r.recorded_at.toISOString(),
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/v1/vaults/:contractId/operators/log
  *
  * Returns a chronological history of operator additions and removals
@@ -1062,6 +1104,150 @@ export async function getSimilarVaults(req: Request, res: Response, next: NextFu
     }
     setCacheHeaders(res);
     res.json(similar);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/vaults/:contractId/fees
+ *
+ * Returns operator fee summary for a vault:
+ *   { totalOperatorFees, epochCount, averageFeePerEpoch, feeBps,
+ *     earlyRedemptionFeeRevenue }
+ *
+ * totalOperatorFees is computed from indexed_events.parsed_data->>'operatorFee'.
+ * earlyRedemptionFeeRevenue is the sum of fee_revenue from processed redemption_requests.
+ *
+ * Issue #786, #788
+ */
+export async function getVaultFees(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = contractAddressSchema.safeParse(req.params["contractId"]);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+      return;
+    }
+    const contractId = parsed.data;
+
+    const vaultRows = await query<{ id: number; operator_fee_bps: number }>(
+      "SELECT id, operator_fee_bps FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+    const vaultId = vaultRows[0].id;
+    const feeBps = vaultRows[0].operator_fee_bps ?? 0;
+
+    // Total operator fees from parsed_data on yield_distributed events
+    const feeRows = await query<{ total: string }>(
+      `SELECT COALESCE(SUM((parsed_data->>'operatorFee')::numeric), 0)::text AS total
+       FROM indexed_events
+       WHERE contract_id = $1 AND event_type = 'yield_distributed' AND parsed_data IS NOT NULL`,
+      [contractId],
+    );
+    const totalOperatorFees = feeRows[0]?.total ?? "0";
+
+    // Epoch count for average calculation
+    const epochRows = await query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM epochs WHERE vault_id = $1",
+      [vaultId],
+    );
+    const epochCount = parseInt(epochRows[0]?.count ?? "0", 10);
+
+    const totalOperatorFeesBig = BigInt(Math.round(parseFloat(totalOperatorFees)));
+    const averageFeePerEpoch = epochCount > 0
+      ? (totalOperatorFeesBig / BigInt(epochCount)).toString()
+      : "0";
+
+    // Early redemption fee revenue (Issue #788)
+    const redemptionFeeRows = await query<{ total: string }>(
+      `SELECT COALESCE(SUM(fee_revenue), 0)::text AS total
+       FROM redemption_requests
+       WHERE vault_id = $1 AND processed = TRUE AND fee_revenue > 0`,
+      [vaultId],
+    );
+    const earlyRedemptionFeeRevenue = redemptionFeeRows[0]?.total ?? "0";
+
+    setCacheHeaders(res);
+    res.json({
+      totalOperatorFees: totalOperatorFeesBig.toString(),
+      epochCount,
+      averageFeePerEpoch,
+      feeBps,
+      earlyRedemptionFeeRevenue,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/vaults/:contractId/fees/cooperator
+ *
+ * Returns cooperator fee breakdown for a vault:
+ *   { cooperatorAddress, cooperatorFeeBps, totalCooperatorFees }
+ *
+ * totalCooperatorFees = totalOperatorFees × cooperatorFeeBps / 10000
+ * Returns zeroes if cooperatorFeeBps is 0.
+ *
+ * Issue #787
+ */
+export async function getCooperatorFees(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = contractAddressSchema.safeParse(req.params["contractId"]);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+      return;
+    }
+    const contractId = parsed.data;
+
+    const vaultRows = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+
+    // Read cooperator address from chain
+    let cooperatorAddress = "";
+    try {
+      cooperatorAddress = await readCooperator(contractId);
+    } catch {
+      // If chain read fails, return zeroes
+    }
+
+    // Get cooperator fee bps from chain
+    let cooperatorFeeBps = 0;
+    try {
+      cooperatorFeeBps = await readCooperatorFeeBps(contractId);
+    } catch {
+      // cooperator_fee_bps not available
+    }
+
+    // Total operator fees
+    const feeRows = await query<{ total: string }>(
+      `SELECT COALESCE(SUM((parsed_data->>'operatorFee')::numeric), 0)::text AS total
+       FROM indexed_events
+       WHERE contract_id = $1 AND event_type = 'yield_distributed' AND parsed_data IS NOT NULL`,
+      [contractId],
+    );
+    const totalOperatorFees = BigInt(Math.round(parseFloat(feeRows[0]?.total ?? "0")));
+
+    const totalCooperatorFees = cooperatorFeeBps > 0
+      ? (totalOperatorFees * BigInt(cooperatorFeeBps) / 10000n).toString()
+      : "0";
+
+    setCacheHeaders(res);
+    res.json({
+      cooperatorAddress,
+      cooperatorFeeBps,
+      totalCooperatorFees,
+    });
   } catch (err) {
     next(err);
   }
