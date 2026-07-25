@@ -7,7 +7,7 @@ Closes #641
 Closes #642
 Closes #643
 
-## Changes
+## Issues Fixed
 
 ### 1. `GET /api/v1/vaults/search` (#640)
 - Combined search endpoint accepting `q`, `category`, `state`, `sort`, `order`, `page`, `pageSize`.

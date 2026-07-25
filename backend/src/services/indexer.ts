@@ -721,6 +721,18 @@ export class Indexer {
       { contractId, owner: withdraw.owner, shares: withdraw.shares.toString() },
       "Processed withdraw event",
     );
+    
+    // Get updated position and emit SSE event
+    const positionResult = await query<{ shares: string; deposited: string }>(
+      `SELECT shares, deposited FROM user_vault_positions uvp
+       JOIN vaults v ON uvp.vault_id = v.id
+       WHERE uvp.user_address = $1 AND v.contract_id = $2`,
+      [withdraw.owner, contractId],
+    );
+    if (positionResult.length > 0) {
+      const { shares, deposited } = positionResult[0];
+      userServiceInstance.emitPositionUpdate(withdraw.owner, contractId, shares, deposited);
+    }
   }
 
   private async handleYieldDistributed(
