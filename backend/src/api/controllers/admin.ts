@@ -2,7 +2,6 @@ import type { Request, Response, NextFunction } from "express";
 import { query } from "../../db/index.js";
 import { indexer } from "../../services/indexerSingleton.js";
 import { logger } from "../../logger.js";
-import { sseManager } from "../../services/sseManager.js";
 import { z } from "zod";
 
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
@@ -344,17 +343,6 @@ export async function getDbStats(_req: Request, res: Response, next: NextFunctio
   } catch (err) {
     next(err);
   }
-}
-
-/**
- * GET /api/v1/admin/indexer/stream
- *
- * SSE endpoint for live indexer progress updates (#757).
- * Protected by requireApiKey({ role: "admin" }).
- * Emits { lastLedger, eventsProcessed, tickDurationMs } per indexer tick.
- */
-export function streamIndexerProgress(req: Request, res: Response): void {
-  sseManager.addIndexerClient(req, res);
 }
 
 /**

@@ -2,6 +2,7 @@ import { createHmac } from "crypto";
 import { lookup } from "dns/promises";
 import { query } from "../db/index.js";
 import { logger } from "../logger.js";
+import { sseService } from "./sse.js";
 
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
@@ -80,12 +81,25 @@ export class NotificationService {
       const webhook = webhooks[i];
       const result = results[i];
       const failed =
-        result.status === "rejected" || (result.status === "fulfilled" && !result.value);
+        result.status === "rejected" ||
+        (result.status === "fulfilled" && !result.value.success);
+
+      const deliveryMetrics =
+        result.status === "fulfilled"
+          ? result.value
+          : { success: false, statusCode: null, durationMs: 0 };
+
+      sseService.broadcastWebhookDelivery(webhook.id, {
+        type: "delivery",
+        attempt: 1,
+        statusCode: deliveryMetrics.statusCode,
+        durationMs: deliveryMetrics.durationMs,
+        success: deliveryMetrics.success,
+      });
 
       if (failed) {
         const newFailures = (webhook.consecutive_failures ?? 0) + 1;
         if (newFailures >= MAX_CONSECUTIVE_FAILURES) {
-          // Auto-deactivate after threshold reached (#667)
           await query(
             `UPDATE webhooks SET consecutive_failures = $1, active = FALSE WHERE id = $2`,
             [newFailures, webhook.id],
@@ -113,7 +127,6 @@ export class NotificationService {
           ],
         );
       } else {
-        // Successful delivery — reset consecutive_failures counter
         if ((webhook.consecutive_failures ?? 0) > 0) {
           await query(`UPDATE webhooks SET consecutive_failures = 0 WHERE id = $1`, [webhook.id]);
         }
@@ -151,13 +164,21 @@ export class NotificationService {
         if (webhookRows.length === 0) continue;
         const webhook = webhookRows[0];
 
-        const ok = await this.deliver(webhook, row.payload);
-        if (ok) {
+        const deliveryResult = await this.deliver(webhook, row.payload);
+
+        sseService.broadcastWebhookDelivery(webhook.id, {
+          type: "delivery",
+          attempt: row.attempt,
+          statusCode: deliveryResult.statusCode,
+          durationMs: deliveryResult.durationMs,
+          success: deliveryResult.success,
+        });
+
+        if (deliveryResult.success) {
           await query(
             "UPDATE webhook_deliveries SET delivered_at = NOW() WHERE id = $1",
             [row.id],
           );
-          // Reset consecutive_failures on successful re-delivery
           if ((webhook.consecutive_failures ?? 0) > 0) {
             await query(`UPDATE webhooks SET consecutive_failures = 0 WHERE id = $1`, [webhook.id]);
           }
@@ -235,11 +256,15 @@ export class NotificationService {
   }
 
   /**
-   * Deliver a webhook payload. Returns true on success, false on failure.
+   * Deliver a webhook payload. Returns delivery metrics.
    * Throws on network/SSRF errors.
    */
-  private async deliver(webhook: WebhookRow, payload: string): Promise<boolean> {
-    // Re-validate at delivery time to defend against DNS rebinding.
+  private async deliver(
+    webhook: WebhookRow,
+    payload: string,
+  ): Promise<{ success: boolean; statusCode: number | null; durationMs: number }> {
+    const start = Date.now();
+
     try {
       await validateWebhookUrl(webhook.url);
     } catch (err) {
@@ -247,7 +272,8 @@ export class NotificationService {
         { webhookId: webhook.id, url: webhook.url, err },
         "Webhook URL failed SSRF check at delivery; skipping",
       );
-      return false;
+      const durationMs = Date.now() - start;
+      return { success: false, statusCode: null, durationMs };
     }
 
     const headers: Record<string, string> = {
@@ -268,12 +294,14 @@ export class NotificationService {
         redirect: "manual",
       });
 
+      const durationMs = Date.now() - start;
+
       if (response.status >= 300 && response.status < 400) {
         logger.warn(
           { webhookId: webhook.id, url: webhook.url, status: response.status },
           "Webhook delivery returned redirect; rejected for SSRF protection",
         );
-        return false;
+        return { success: false, statusCode: response.status, durationMs };
       }
 
       if (!response.ok) {
@@ -281,12 +309,13 @@ export class NotificationService {
           { webhookId: webhook.id, url: webhook.url, status: response.status },
           "Webhook delivery returned non-2xx status",
         );
-        return false;
+        return { success: false, statusCode: response.status, durationMs };
       }
 
-      return true;
+      return { success: true, statusCode: response.status, durationMs };
     } catch (err) {
       logger.warn({ webhookId: webhook.id, url: webhook.url, err }, "Webhook delivery failed");
+      const durationMs = Date.now() - start;
       throw err;
     }
   }
