@@ -18,3 +18,8 @@ adminRouter.delete("/api-keys/:id", deleteApiKey);
 adminRouter.get("/webhooks/:id/deliveries", getWebhookDeliveries);
 adminRouter.get("/db/stats", getDbStats);
 adminRouter.get("/fees", getAdminFees);
+
+adminRouter.post("/users/:address/aml-flag", flagUserAml);
+adminRouter.post("/users/:address/aml-clear", clearUserAml);
+adminRouter.get("/compliance/flagged-users", getFlaggedUsers);
+adminRouter.get("/compliance/positions-snapshot", getPositionsSnapshot);

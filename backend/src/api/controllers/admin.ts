@@ -4,6 +4,7 @@ import { indexer } from "../../services/indexerSingleton.js";
 import { logger } from "../../logger.js";
 import { z } from "zod";
 
+const stellarAddressSchema = z.string().length(56).regex(/^G[A-Z2-7]{55}$/);
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
 
 export async function getAdminStats(_req: Request, res: Response, next: NextFunction) {
@@ -400,6 +401,195 @@ export async function getAdminFees(_req: Request, res: Response, next: NextFunct
         totalFees: v.total_fees,
       })),
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/v1/admin/users/:address/aml-flag
+ *
+ * Sets aml_flagged = true on a user record. Admin only. (#798)
+ */
+export async function flagUserAml(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = stellarAddressSchema.safeParse(req.params["address"]);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid address format" });
+      return;
+    }
+    const address = parsed.data;
+
+    const rows = await query<{ id: number }>(
+      "SELECT id FROM users WHERE address = $1",
+      [address],
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "User not found" });
+      return;
+    }
+
+    await query(
+      `UPDATE users SET aml_flagged = TRUE, aml_flagged_at = NOW(), updated_at = NOW()
+       WHERE address = $1`,
+      [address],
+    );
+
+    res.json({ address, amlFlagged: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/v1/admin/users/:address/aml-clear
+ *
+ * Sets aml_flagged = false on a user record. Admin only. (#798)
+ */
+export async function clearUserAml(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = stellarAddressSchema.safeParse(req.params["address"]);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid address format" });
+      return;
+    }
+    const address = parsed.data;
+
+    const rows = await query<{ id: number }>(
+      "SELECT id FROM users WHERE address = $1",
+      [address],
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "User not found" });
+      return;
+    }
+
+    await query(
+      `UPDATE users SET aml_flagged = FALSE, aml_flagged_at = NULL, updated_at = NOW()
+       WHERE address = $1`,
+      [address],
+    );
+
+    res.json({ address, amlFlagged: false });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/admin/compliance/flagged-users
+ *
+ * Returns all users where aml_flagged = true. Admin only. (#799)
+ */
+export async function getFlaggedUsers(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const rows = await query<{
+      address: string;
+      aml_flagged_at: Date;
+      total_deposited: string;
+      kyc_verified: boolean;
+    }>(
+      `SELECT
+         u.address,
+         u.aml_flagged_at,
+         COALESCE(SUM(uvp.deposited), 0)::text AS total_deposited,
+         u.kyc_verified
+       FROM users u
+       LEFT JOIN user_vault_positions uvp ON uvp.user_address = u.address
+       WHERE u.aml_flagged = TRUE
+       GROUP BY u.address, u.aml_flagged_at, u.kyc_verified
+       ORDER BY u.aml_flagged_at DESC`,
+    );
+
+    res.json(
+      rows.map((r) => ({
+        address: r.address,
+        amlFlaggedAt: r.aml_flagged_at,
+        totalDeposited: r.total_deposited,
+        kycVerified: r.kyc_verified,
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/admin/compliance/positions-snapshot
+ *
+ * Returns all user vault positions as of a given timestamp using
+ * share_balance_snapshots. Supports contractId filter and CSV output. (#800)
+ */
+export async function getPositionsSnapshot(req: Request, res: Response, next: NextFunction) {
+  try {
+    const asOfParam = req.query["asOf"] as string | undefined;
+    const contractIdParam = req.query["contractId"] as string | undefined;
+    const formatParam = req.query["format"] as string | undefined;
+
+    if (!asOfParam) {
+      res.status(400).json({ error: "BadRequest", message: "asOf query parameter is required (ISO 8601)" });
+      return;
+    }
+
+    const asOf = new Date(asOfParam);
+    if (isNaN(asOf.getTime())) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid asOf timestamp" });
+      return;
+    }
+
+    if (contractIdParam) {
+      const cidParsed = contractAddressSchema.safeParse(contractIdParam);
+      if (!cidParsed.success) {
+        res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+        return;
+      }
+    }
+
+    const params: unknown[] = [asOf.toISOString()];
+    let contractFilter = "";
+    if (contractIdParam) {
+      params.push(contractIdParam);
+      contractFilter = `AND v.contract_id = $${params.length}`;
+    }
+
+    const rows = await query<{
+      user_address: string;
+      vault_contract_id: string;
+      shares: string;
+      recorded_at: Date;
+    }>(
+      `SELECT DISTINCT ON (sbs.user_address, sbs.vault_id)
+         sbs.user_address,
+         v.contract_id AS vault_contract_id,
+         sbs.shares::text AS shares,
+         sbs.recorded_at
+       FROM share_balance_snapshots sbs
+       JOIN vaults v ON sbs.vault_id = v.id
+       WHERE sbs.recorded_at <= $1
+         ${contractFilter}
+       ORDER BY sbs.user_address, sbs.vault_id, sbs.epoch DESC`,
+      params,
+    );
+
+    if (formatParam === "csv") {
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="positions-snapshot-${asOf.toISOString()}.csv"`);
+      const header = "user_address,vault_contract_id,shares,recorded_at\n";
+      const csvBody = rows
+        .map((r) => `${r.user_address},${r.vault_contract_id},${r.shares},${r.recorded_at.toISOString()}`)
+        .join("\n");
+      res.send(header + csvBody);
+      return;
+    }
+
+    res.json(
+      rows.map((r) => ({
+        userAddress: r.user_address,
+        vaultContractId: r.vault_contract_id,
+        shares: r.shares,
+        recordedAt: r.recorded_at,
+      })),
+    );
   } catch (err) {
     next(err);
   }

@@ -42,6 +42,8 @@ export interface User {
   id: number;
   address: string;
   kycVerified: boolean;
+  amlFlagged: boolean;
+  amlFlaggedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
