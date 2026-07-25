@@ -2,6 +2,7 @@ import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
+import { createHandler } from "graphql-http/lib/use/express";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { healthRouter } from "./api/routes/health.js";
@@ -15,6 +16,8 @@ import { requestId } from "./api/middleware/requestId.js";
 import { publicLimiter, authLimiter } from "./api/middleware/rateLimit.js";
 import { httpRequestsTotal, getMetrics } from "./services/metrics.js";
 import { setupOpenApiRoutes } from "./services/openapi.js";
+import { schema } from "./graphql/schema.js";
+import { root } from "./graphql/resolvers.js";
 
 export function createApp(): Express {
   const app = express();
@@ -45,6 +48,11 @@ export function createApp(): Express {
   app.use("/api/v1/yields", publicLimiter, yieldsRouter);
   app.use("/api/v1/admin", authLimiter, adminRouter);
   app.use("/api/v1/webhooks", authLimiter, webhooksRouter);
+  app.all(
+    "/graphql",
+    publicLimiter,
+    createHandler({ schema, rootValue: root }),
+  );
   app.get("/metrics", async (_req, res) => {
     res.set("Content-Type", "text/plain");
     res.send(await getMetrics());
