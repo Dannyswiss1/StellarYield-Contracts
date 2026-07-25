@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { parseVaultRemovedEvent } from "./indexer.js";
 import { nativeToScVal } from "@stellar/stellar-sdk";
 

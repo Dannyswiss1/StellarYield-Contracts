@@ -47,10 +47,12 @@ export class UserService {
       id: number;
       address: string;
       kyc_verified: boolean;
+      aml_flagged: boolean;
+      aml_flagged_at: Date | null;
       created_at: Date;
       updated_at: Date;
     }>(
-      `SELECT id, address, kyc_verified, created_at, updated_at 
+      `SELECT id, address, kyc_verified, aml_flagged, aml_flagged_at, created_at, updated_at 
        FROM users 
        WHERE address = $1
        LIMIT 1`,
@@ -66,6 +68,8 @@ export class UserService {
       id: row.id,
       address: row.address,
       kycVerified: row.kyc_verified,
+      amlFlagged: row.aml_flagged,
+      amlFlaggedAt: row.aml_flagged_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -344,10 +348,12 @@ export class UserService {
       id: number;
       address: string;
       kyc_verified: boolean;
+      aml_flagged: boolean;
+      aml_flagged_at: Date | null;
       created_at: Date;
       updated_at: Date;
     }>(
-      `SELECT id, address, kyc_verified, created_at, updated_at 
+      `SELECT id, address, kyc_verified, aml_flagged, aml_flagged_at, created_at, updated_at 
        FROM users 
        WHERE address ILIKE $1 
        LIMIT 20`,
@@ -358,6 +364,8 @@ export class UserService {
       id: row.id,
       address: row.address,
       kycVerified: row.kyc_verified,
+      amlFlagged: row.aml_flagged,
+      amlFlaggedAt: row.aml_flagged_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));

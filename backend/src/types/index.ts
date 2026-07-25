@@ -42,6 +42,8 @@ export interface User {
   id: number;
   address: string;
   kycVerified: boolean;
+  amlFlagged: boolean;
+  amlFlaggedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -97,6 +99,7 @@ export interface Epoch {
   yieldAmount: string;
   totalShares: string;
   distributedAt: Date | null;
+  netYield: string;
 }
 
 export interface IndexedEvent {

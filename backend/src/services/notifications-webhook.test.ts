@@ -24,26 +24,26 @@ const mockQuery = query as ReturnType<typeof vi.fn>;
 describe("NotificationService.verifySignature (#664)", () => {
   const svc = new NotificationService();
 
-  it("returns true for a correctly signed payload", () => {
+  it("returns true for a correctly signed payload", async () => {
     const secret = "my-secret";
     const payload = '{"event":"test"}';
-    const { createHmac } = require("crypto");
+    const { createHmac } = await import("crypto");
     const expected = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
     expect(svc.verifySignature(payload, expected, secret)).toBe(true);
   });
 
-  it("returns false for a tampered payload", () => {
+  it("returns false for a tampered payload", async () => {
     const secret = "my-secret";
     const originalPayload = '{"event":"test"}';
     const tamperedPayload = '{"event":"tampered"}';
-    const { createHmac } = require("crypto");
+    const { createHmac } = await import("crypto");
     const sig = `sha256=${createHmac("sha256", secret).update(originalPayload).digest("hex")}`;
     expect(svc.verifySignature(tamperedPayload, sig, secret)).toBe(false);
   });
 
-  it("returns false for a wrong secret", () => {
+  it("returns false for a wrong secret", async () => {
     const payload = '{"event":"test"}';
-    const { createHmac } = require("crypto");
+    const { createHmac } = await import("crypto");
     const sig = `sha256=${createHmac("sha256", "correct-secret").update(payload).digest("hex")}`;
     expect(svc.verifySignature(payload, sig, "wrong-secret")).toBe(false);
   });

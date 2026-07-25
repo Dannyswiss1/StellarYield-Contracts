@@ -22,6 +22,7 @@ export async function getVaultEpochs(req: Request, res: Response, next: NextFunc
     res.json(
       epochs.map((e) => ({
         ...e,
+        netYield: e.netYield,
         yieldPerShare: formatYieldPerShare(e.yieldAmount, e.totalShares),
         distributedAt: e.distributedAt ? e.distributedAt.toISOString() : null,
       })),

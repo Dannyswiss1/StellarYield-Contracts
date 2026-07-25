@@ -110,7 +110,7 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   }
 }
 
-export async function getVaultLiveState(req: Request, res: Response, next: NextFunction) {
+export async function getVaultLiveState(req: Request, res: Response, _next: NextFunction) {
   try {
     const contractId = String(req.params["contractId"]);
     const state = await readVaultState(contractId);
@@ -124,7 +124,7 @@ export async function getVaultLiveState(req: Request, res: Response, next: NextF
   }
 }
 
-export async function getVaultLiveTotalAssets(req: Request, res: Response, next: NextFunction) {
+export async function getVaultLiveTotalAssets(req: Request, res: Response, _next: NextFunction) {
   try {
     const totalAssets = await readTotalAssets(String(req.params["contractId"]));
     res.json({ totalAssets: totalAssets.toString() });
@@ -976,6 +976,49 @@ export async function getVaultOperators(req: Request, res: Response, next: NextF
     const operators = await vaultService.getVaultOperators(contractId);
     setCacheHeaders(res);
     res.json(operators);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/vaults/:contractId/fees/history
+ *
+ * Returns all fee rate changes for a vault ordered by recorded_at DESC.
+ * Returns [] for a vault with no fee changes. (#791)
+ */
+export async function getFeeHistory(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const vaultRow = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRow.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+    const rows = await query<{
+      old_fee_bps: number;
+      new_fee_bps: number;
+      changed_by: string;
+      recorded_at: Date;
+    }>(
+      `SELECT old_fee_bps, new_fee_bps, changed_by, recorded_at
+       FROM vault_fee_history
+       WHERE vault_id = $1
+       ORDER BY recorded_at DESC`,
+      [vaultRow[0].id],
+    );
+    setCacheHeaders(res);
+    res.json(
+      rows.map((r) => ({
+        oldFeeBps: r.old_fee_bps,
+        newFeeBps: r.new_fee_bps,
+        changedBy: r.changed_by,
+        recordedAt: r.recorded_at.toISOString(),
+      })),
+    );
   } catch (err) {
     next(err);
   }
