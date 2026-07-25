@@ -338,3 +338,118 @@ export async function readVaultName(contractId: string): Promise<string> {
   const raw = await simulateRead<string | Record<string, unknown>>(contractId, "name");
   return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
 }
+
+/**
+ * Read the underlying asset address held by the vault.
+ */
+export async function readAsset(contractId: string): Promise<string> {
+  const raw = await simulateRead<string | Record<string, unknown>>(contractId, "asset");
+  return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+}
+
+/**
+ * Read the maximum deposit allowed per user from the contract.
+ * Returns null on simulation error (e.g. vault types that don't expose it).
+ */
+export async function readMaxDepositPerUser(contractId: string): Promise<bigint | null> {
+  try {
+    const value = await simulateRead<bigint>(contractId, "max_deposit_per_user");
+    return BigInt(value ?? 0n);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the RWA category from a vault contract.
+ * Returns null on simulation error (e.g. aggregator vaults with no RWA fields).
+ */
+export async function readRwaCategory(contractId: string): Promise<string | null> {
+  try {
+    const raw = await simulateRead<string | Record<string, unknown>>(contractId, "rwa_category");
+    return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read every field `VaultService.upsertVault` needs directly from a vault
+ * contract. Used by the factory import script (#813) to backfill the DB for
+ * vaults that already exist on-chain but were never indexed.
+ */
+export interface VaultFields {
+  asset: string;
+  name: string;
+  symbol: string;
+  state: VaultState;
+  totalAssets: string;
+  totalSupply: string;
+  fundingTarget: string | null;
+  fundingDeadline: Date | null;
+  minDeposit: string | null;
+  maxDepositPerUser: string | null;
+  rwaName: string | null;
+  rwaSymbol: string | null;
+  rwaDocumentUri: string | null;
+  rwaCategory: string | null;
+}
+
+export async function readVaultFields(contractId: string): Promise<VaultFields> {
+  const [state, totalAssets, totalSupply, asset, name, symbol] = await Promise.all([
+    readVaultState(contractId),
+    readTotalAssets(contractId),
+    readTotalSupply(contractId),
+    readAsset(contractId),
+    readVaultName(contractId),
+    readVaultSymbol(contractId),
+  ]);
+
+  const [
+    fundingTarget,
+    fundingDeadline,
+    minDeposit,
+    maxDepositPerUser,
+    rwaName,
+    rwaSymbol,
+    rwaDocumentUri,
+    rwaCategory,
+  ] = await Promise.all([
+    readFundingTarget(contractId).then((v) => v.toString()).catch(() => null),
+    readFundingDeadline(contractId)
+      .then((v) => (v > 0n ? new Date(Number(v) * 1000) : null))
+      .catch(() => null),
+    readMinDeposit(contractId).then((v) => v.toString()).catch(() => null),
+    readMaxDepositPerUser(contractId).then((v) => (v === null ? null : v.toString())),
+    readRwaName(contractId),
+    readRwaSymbol(contractId),
+    readRwaDocumentUri(contractId),
+    readRwaCategory(contractId),
+  ]);
+
+  return {
+    asset,
+    name,
+    symbol,
+    state,
+    totalAssets: totalAssets.toString(),
+    totalSupply: totalSupply.toString(),
+    fundingTarget,
+    fundingDeadline,
+    minDeposit,
+    maxDepositPerUser,
+    rwaName,
+    rwaSymbol,
+    rwaDocumentUri,
+    rwaCategory,
+  };
+}
+
+/**
+ * Read the list of vault contract addresses registered in a factory contract.
+ * Used by the factory import script (#813).
+ */
+export async function readFactoryVaults(factoryId: string): Promise<string[]> {
+  const raw = await simulateRead<unknown[]>(factoryId, "get_all_vaults");
+  return raw.map((addr) => String(addr));
+}
