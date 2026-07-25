@@ -12,15 +12,168 @@ const TTL_BY_STATE: Record<string, number> = {
 };
 const DEFAULT_TTL = 30;
 
+/**
+ * Columns the vault list endpoint may be sorted by (#855).
+ *
+ * Sort fields are interpolated straight into the ORDER BY clause, so every
+ * incoming value must be matched against this allowlist before it reaches SQL.
+ */
+export const VAULT_SORT_FIELDS = [
+  "created_at",
+  "updated_at",
+  "total_assets",
+  "total_supply",
+  "state",
+  "name",
+] as const;
+
+export type VaultSortField = (typeof VAULT_SORT_FIELDS)[number];
+
+export type SortDirection = "asc" | "desc";
+
+export interface VaultSortSpec {
+  field: VaultSortField;
+  direction: SortDirection;
+}
+
+/** Maximum number of comma-separated sort fields accepted by the vault list endpoint (#855). */
+export const MAX_VAULT_SORT_FIELDS = 3;
+
+export type VaultSortParseResult =
+  | { ok: true; specs: VaultSortSpec[] }
+  | { ok: false; message: string };
+
+function isVaultSortField(value: string): value is VaultSortField {
+  return (VAULT_SORT_FIELDS as readonly string[]).includes(value);
+}
+
+/**
+ * Parse the `sort` query parameter into an ordered list of sort specs (#855).
+ *
+ * Accepts a comma-separated list of `field[:direction]` pairs, e.g.
+ * `state:asc,total_assets:desc`. A pair with no explicit direction falls back to
+ * `defaultOrder`, which keeps the legacy `?sort=total_assets&order=asc` form
+ * working. Returns a failure result rather than throwing, so the route layer can
+ * surface the reason as an HTTP 400.
+ */
+export function parseVaultSort(
+  sort: string | undefined,
+  defaultOrder: SortDirection = "desc",
+): VaultSortParseResult {
+  const raw = (sort ?? "").trim();
+  if (raw === "") {
+    return { ok: true, specs: [{ field: "created_at", direction: defaultOrder }] };
+  }
+
+  const segments = raw.split(",").map((segment) => segment.trim());
+  if (segments.some((segment) => segment === "")) {
+    return { ok: false, message: "sort must not contain empty fields" };
+  }
+  if (segments.length > MAX_VAULT_SORT_FIELDS) {
+    return {
+      ok: false,
+      message: `sort accepts at most ${MAX_VAULT_SORT_FIELDS} fields, received ${segments.length}`,
+    };
+  }
+
+  const specs: VaultSortSpec[] = [];
+  const seen = new Set<string>();
+
+  for (const segment of segments) {
+    const [field, direction, ...rest] = segment.split(":");
+    if (rest.length > 0) {
+      return {
+        ok: false,
+        message: `Invalid sort entry "${segment}", expected "field" or "field:asc|desc"`,
+      };
+    }
+    if (!isVaultSortField(field)) {
+      return {
+        ok: false,
+        message: `Unknown sort field "${field}". Allowed fields: ${VAULT_SORT_FIELDS.join(", ")}`,
+      };
+    }
+    if (direction !== undefined && direction !== "asc" && direction !== "desc") {
+      return {
+        ok: false,
+        message: `Invalid sort direction "${direction}" for field "${field}", expected "asc" or "desc"`,
+      };
+    }
+    if (seen.has(field)) {
+      return { ok: false, message: `Duplicate sort field "${field}"` };
+    }
+    seen.add(field);
+    specs.push({ field, direction: direction ?? defaultOrder });
+  }
+
+  return { ok: true, specs };
+}
+
 interface ListVaultsOptions {
   page: number;
   pageSize: number;
   state?: string;
   category?: string;
   cursor?: string;
-  sort: "created_at" | "total_assets";
-  order: "asc" | "desc";
+  /** Comma-separated `field[:direction]` list — see {@link parseVaultSort} (#855). */
+  sort?: string;
+  order?: SortDirection;
+  /** Inclusive lower bound on `created_at`, as an ISO 8601 date or date-time (#856). */
+  createdFrom?: string;
+  /** Inclusive upper bound on `created_at`, as an ISO 8601 date or date-time (#856). */
+  createdTo?: string;
+  /** Inclusive lower bound on `total_assets`, as a non-negative integer string (#857). */
+  minTotalAssets?: string;
+  /** Inclusive upper bound on `total_assets`, as a non-negative integer string (#857). */
+  maxTotalAssets?: string;
   q?: string; // forwarded from controller; listVaults currently delegates text search to /search
+}
+
+/** Row-selection filters shared by the vault list query and its COUNT companion. */
+interface VaultListFilters {
+  state?: string;
+  category?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  minTotalAssets?: string;
+  maxTotalAssets?: string;
+}
+
+/**
+ * Build the WHERE fragments common to the vault list query and the COUNT that
+ * produces `total`, so both always select the same set of rows.
+ *
+ * Placeholders are numbered from `startIdx + 1`; `nextIdx` reports the highest
+ * placeholder used so the caller can keep numbering from there. Every bound is
+ * a bound parameter — nothing here is interpolated from user input.
+ */
+function buildVaultListFilters(
+  filters: VaultListFilters,
+  startIdx = 0,
+): { conditions: string[]; params: any[]; nextIdx: number } {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let idx = startIdx;
+
+  const add = (toCondition: (placeholder: string) => string, value: unknown): void => {
+    idx++;
+    conditions.push(toCondition(`$${idx}`));
+    params.push(value);
+  };
+
+  if (filters.state) add((p) => `v.state = ${p}`, filters.state);
+  if (filters.category) add((p) => `v.rwa_category = ${p}`, filters.category);
+
+  // Creation date range (#856). Either bound may be omitted for an open-ended range.
+  if (filters.createdFrom) add((p) => `v.created_at >= ${p}::timestamptz`, filters.createdFrom);
+  if (filters.createdTo) add((p) => `v.created_at <= ${p}::timestamptz`, filters.createdTo);
+
+  // Total assets (TVL) range (#857). Bound as strings and cast to NUMERIC so
+  // values beyond Number.MAX_SAFE_INTEGER keep full precision.
+  if (filters.minTotalAssets) add((p) => `v.total_assets >= ${p}::numeric`, filters.minTotalAssets);
+  if (filters.maxTotalAssets) add((p) => `v.total_assets <= ${p}::numeric`, filters.maxTotalAssets);
+
+  return { conditions, params, nextIdx: idx };
 }
 
 interface VaultRow {
@@ -126,9 +279,21 @@ export class VaultService {
     const cached = await cacheGet<PaginatedResponse<Vault>>(cacheKey);
     if (cached) return cached;
 
-    const { page, pageSize, state, category, cursor, sort, order } = opts;
-    const sortColumn = sort === "total_assets" ? "total_assets" : "created_at";
-    const sortDirection = order === "asc" ? "ASC" : "DESC";
+    const { page, pageSize, state, category, cursor, order } = opts;
+
+    // Multi-field sorting (#855). The route layer validates `sort` and returns a
+    // 400 for bad input; re-parsing here keeps unvalidated callers out of SQL.
+    const sortResult = parseVaultSort(opts.sort, order ?? "desc");
+    if (!sortResult.ok) {
+      throw new Error(`Invalid sort parameter: ${sortResult.message}`);
+    }
+    const orderByClause = sortResult.specs
+      .map((spec) => `v.${spec.field} ${spec.direction === "asc" ? "ASC" : "DESC"}`)
+      .join(", ");
+
+    // Cursor pagination keys off (created_at, id), so the tiebreaker and the
+    // cursor comparison both follow the primary sort field's direction.
+    const sortDirection = sortResult.specs[0].direction === "asc" ? "ASC" : "DESC";
     const isDesc = sortDirection === "DESC";
 
     // Decode cursor if provided
@@ -145,21 +310,18 @@ export class VaultService {
       }
     }
 
-    const conditions: string[] = [];
-    const params: any[] = [];
-    let paramIdx = 0;
-
-    if (state) {
-      paramIdx++;
-      conditions.push(`v.state = $${paramIdx}`);
-      params.push(state);
-    }
-
-    if (category) {
-      paramIdx++;
-      conditions.push(`v.rwa_category = $${paramIdx}`);
-      params.push(category);
-    }
+    const filters: VaultListFilters = {
+      state,
+      category,
+      createdFrom: opts.createdFrom,
+      createdTo: opts.createdTo,
+      minTotalAssets: opts.minTotalAssets,
+      maxTotalAssets: opts.maxTotalAssets,
+    };
+    const filtered = buildVaultListFilters(filters);
+    const conditions = filtered.conditions;
+    const params = filtered.params;
+    let paramIdx = filtered.nextIdx;
 
     // Filter out archived vaults from standard list queries (#674)
     conditions.push(`v.archived = FALSE`);
@@ -201,7 +363,7 @@ export class VaultService {
                ), 0) AS depositor_count
         FROM vaults v
         ${whereClause}
-        ORDER BY v.${sortColumn} ${sortDirection}, v.id ${sortDirection}
+        ORDER BY ${orderByClause}, v.id ${sortDirection}
         LIMIT $${limitIdx}`;
     } else {
       const offset = (page - 1) * pageSize;
@@ -218,7 +380,7 @@ export class VaultService {
                ), 0) AS depositor_count
         FROM vaults v
         ${whereClause}
-        ORDER BY v.${sortColumn} ${sortDirection}
+        ORDER BY ${orderByClause}
         LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`;
     }
 
@@ -239,19 +401,8 @@ export class VaultService {
     // Get total count (only when not using cursor, to avoid expensive counts)
     let total = 0;
     if (!cursor) {
-      const countConditions: string[] = [];
-      const countParams: any[] = [];
-      let countIdx = 0;
-      if (state) {
-        countIdx++;
-        countConditions.push(`v.state = $${countIdx}`);
-        countParams.push(state);
-      }
-      if (category) {
-        countIdx++;
-        countConditions.push(`v.rwa_category = $${countIdx}`);
-        countParams.push(category);
-      }
+      const { conditions: countConditions, params: countParams } =
+        buildVaultListFilters(filters);
       const countWhere = countConditions.length > 0 ? `WHERE ${countConditions.join(" AND ")}` : "";
       const countResult = await query<{ count: string }>(
         `SELECT COUNT(*) as count FROM vaults v ${countWhere}`,

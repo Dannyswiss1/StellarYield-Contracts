@@ -36,19 +36,98 @@ import {
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
 import { requireApiKey } from "../middleware/auth.js";
+import { parseVaultSort } from "../../services/vault.js";
 
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
 
-const listVaultsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
-  state: z.string().optional(),
-  category: z.string().optional(),
-  cursor: z.string().optional(),
-  sort: z.enum(["created_at", "total_assets"]).default("created_at"),
-  order: z.enum(["asc", "desc"]).default("desc"),
-  q: z.string().optional(),
+// Accepts a calendar date (2025-01-31) or a full ISO 8601 date-time, with or
+// without an offset.
+const ISO_DATE_PATTERN =
+  /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/**
+ * Validate an ISO 8601 date or date-time string.
+ *
+ * The calendar round-trip is required because `Date.parse` silently rolls
+ * overflowing components over — "2025-02-30" becomes March 2 rather than NaN —
+ * so the shape check alone would let impossible dates through.
+ */
+function isValidIsoDate(value: string): boolean {
+  if (!ISO_DATE_PATTERN.test(value)) return false;
+
+  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+  const asUtc = new Date(Date.UTC(year, month - 1, day));
+  if (
+    asUtc.getUTCFullYear() !== year ||
+    asUtc.getUTCMonth() !== month - 1 ||
+    asUtc.getUTCDate() !== day
+  ) {
+    return false;
+  }
+
+  // Catches out-of-range time components such as T25:00:00Z.
+  return !Number.isNaN(Date.parse(value));
+}
+
+const isoDateSchema = z.string().refine(isValidIsoDate, {
+  message: "must be an ISO 8601 date (YYYY-MM-DD) or date-time",
 });
+
+// Token amounts exceed Number.MAX_SAFE_INTEGER, so BigInt-safe strings are kept
+// as strings all the way to the ::numeric cast rather than coerced to a number.
+const nonNegativeAmountSchema = z
+  .string()
+  .regex(/^\d+$/, "must be a non-negative integer");
+
+const listVaultsQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
+    state: z.string().optional(),
+    category: z.string().optional(),
+    cursor: z.string().optional(),
+    // Comma-separated `field[:direction]` list, e.g. `state:asc,total_assets:desc` (#855).
+    // A bare field name (`?sort=total_assets`) still takes its direction from `order`.
+    sort: z.string().default("created_at"),
+    order: z.enum(["asc", "desc"]).default("desc"),
+    // Creation date range; either bound may stand alone for an open-ended filter (#856).
+    createdFrom: isoDateSchema.optional(),
+    createdTo: isoDateSchema.optional(),
+    // Total assets (TVL) range; either bound may stand alone (#857).
+    minTotalAssets: nonNegativeAmountSchema.optional(),
+    maxTotalAssets: nonNegativeAmountSchema.optional(),
+    q: z.string().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const parsed = parseVaultSort(value.sort, value.order);
+    if (!parsed.ok) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sort"], message: parsed.message });
+    }
+
+    if (
+      value.createdFrom !== undefined &&
+      value.createdTo !== undefined &&
+      Date.parse(value.createdFrom) > Date.parse(value.createdTo)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["createdFrom"],
+        message: "createdFrom must not be after createdTo",
+      });
+    }
+
+    if (
+      value.minTotalAssets !== undefined &&
+      value.maxTotalAssets !== undefined &&
+      BigInt(value.minTotalAssets) > BigInt(value.maxTotalAssets)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["minTotalAssets"],
+        message: "minTotalAssets must not be greater than maxTotalAssets",
+      });
+    }
+  });
 
 const vaultParamsSchema = z.object({
   contractId: contractAddressSchema,

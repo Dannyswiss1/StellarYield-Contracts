@@ -17,7 +17,10 @@
     "rebuild-positions": "tsx src/scripts/rebuild-positions.ts",
     "export-data": "tsx src/scripts/export-data.ts",
     "check-indexer": "tsx src/scripts/check-indexer.ts",
-    "rotate-api-key": "tsx src/scripts/rotate-api-key.ts"
+    "rotate-api-key": "tsx src/scripts/rotate-api-key.ts",
+    "import-from-factory": "tsx src/scripts/import-from-factory.ts",
+    "indexer": "node dist/indexer/index.js",
+    "operator-expiry-task": "node dist/tasks/operatorExpiry.js"
   },
   "engines": {
     "node": ">=20"
