@@ -7,7 +7,6 @@ import {
   readRwaName,
   readRwaSymbol,
   readRwaDocumentUri,
-  readOperatorFeeBps,
 } from "./stellar.js";
 import { VaultService } from "./vault.js";
 import { UserService } from "./user.js";
@@ -767,7 +766,6 @@ export class Indexer {
     contractId: string,
     yieldDist: { epoch: number; amount: bigint; timestamp: bigint },
   ): Promise<{ netYield: string; operatorFee: string }> {
-  ): Promise<Record<string, unknown> | undefined> {
     const vaultRow = await query<{ id: number; operator_fee_bps: number }>(
       "SELECT id, operator_fee_bps FROM vaults WHERE contract_id = $1",
       [contractId],
@@ -775,7 +773,6 @@ export class Indexer {
     if (vaultRow.length === 0) {
       logger.warn({ contractId }, "yield_distributed for unknown vault — skipping epoch record");
       return { netYield: yieldDist.amount.toString(), operatorFee: "0" };
-      return undefined;
     }
     const vaultId = vaultRow[0].id;
     const operatorFeeBps = vaultRow[0].operator_fee_bps ?? 0;
@@ -786,7 +783,6 @@ export class Indexer {
     );
     const totalShares = supplyRow[0]?.total_supply ?? "0";
 
-    // Compute operator fee and net yield
     const grossAmount = yieldDist.amount;
     const operatorFee = (grossAmount * BigInt(operatorFeeBps)) / 10000n;
     const netYield = grossAmount - operatorFee;
@@ -799,7 +795,6 @@ export class Indexer {
     );
     await this.recordTvlSnapshot(contractId);
 
-    // Snapshot every active shareholder's balance for this epoch.
     await query(
       `INSERT INTO share_balance_snapshots (vault_id, user_address, epoch, shares, recorded_at)
        SELECT $1, uvp.user_address, $2, uvp.shares, NOW()
@@ -821,42 +816,11 @@ export class Indexer {
       logger.warn({ err: e }, "NotificationService.notify failed for vault.fee_earned");
     }
 
-    // Compute operator fee breakdown for parsed_data
-    const grossYield = yieldDist.amount;
-    let operatorFeeBps = vaultRow[0].operator_fee_bps ?? 0;
-
-    // Lazily populate operator_fee_bps from chain if still at default (0)
-    if (operatorFeeBps === 0) {
-      try {
-        operatorFeeBps = await readOperatorFeeBps(contractId);
-        if (operatorFeeBps > 0) {
-          await query(
-            `UPDATE vaults SET operator_fee_bps = $1, updated_at = NOW() WHERE id = $2`,
-            [operatorFeeBps, vaultId],
-          );
-        }
-      } catch (err) {
-        logger.warn({ err, contractId }, "Failed to read operator_fee_bps from chain");
-      }
-    }
-
-    const parsedData: Record<string, unknown> | undefined =
-      operatorFeeBps > 0
-        ? {
-            grossYield: grossYield.toString(),
-            operatorFee: (grossYield * BigInt(operatorFeeBps) / 10000n).toString(),
-            netYield:
-              (grossYield - (grossYield * BigInt(operatorFeeBps) / 10000n)).toString(),
-          }
-        : undefined;
-
     logger.info(
-      { contractId, epoch: yieldDist.epoch, amount: grossYield.toString() },
+      { contractId, epoch: yieldDist.epoch, amount: yieldDist.amount.toString() },
       "Processed yield_distributed event",
     );
     return { netYield: netYield.toString(), operatorFee: operatorFee.toString() };
-
-    return parsedData;
   }
 
   private async handleVaultCreated(

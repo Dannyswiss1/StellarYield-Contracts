@@ -35,7 +35,7 @@ async function getApp() {
 }
 
 /** Hash an API key the same way the auth middleware does */
-function hashKey(plaintext: string): string {
+function _hashKey(plaintext: string): string {
   return createHash("sha256").update(plaintext).digest("hex");
 }
 

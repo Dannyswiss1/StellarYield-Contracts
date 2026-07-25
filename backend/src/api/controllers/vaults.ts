@@ -110,7 +110,7 @@ export async function getVault(req: Request, res: Response, next: NextFunction) 
   }
 }
 
-export async function getVaultLiveState(req: Request, res: Response, next: NextFunction) {
+export async function getVaultLiveState(req: Request, res: Response, _next: NextFunction) {
   try {
     const contractId = String(req.params["contractId"]);
     const state = await readVaultState(contractId);
@@ -124,7 +124,7 @@ export async function getVaultLiveState(req: Request, res: Response, next: NextF
   }
 }
 
-export async function getVaultLiveTotalAssets(req: Request, res: Response, next: NextFunction) {
+export async function getVaultLiveTotalAssets(req: Request, res: Response, _next: NextFunction) {
   try {
     const totalAssets = await readTotalAssets(String(req.params["contractId"]));
     res.json({ totalAssets: totalAssets.toString() });
