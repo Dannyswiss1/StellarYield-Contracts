@@ -97,6 +97,7 @@ export interface Epoch {
   yieldAmount: string;
   totalShares: string;
   distributedAt: Date | null;
+  netYield: string;
 }
 
 export interface IndexedEvent {
