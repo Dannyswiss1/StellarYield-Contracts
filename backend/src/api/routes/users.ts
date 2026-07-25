@@ -9,6 +9,7 @@ import {
   getUserPortfolio,
   getUserShareHistory,
   getUserYieldHistory,
+  getUserYieldSummary,
   searchUsers,
 } from "../controllers/users.js";
 import {
@@ -83,6 +84,11 @@ usersRouter.get(
   validateParams(addressParamSchema),
   validateQuery(yieldHistoryQuerySchema),
   getUserYieldHistory,
+);
+usersRouter.get(
+  "/:address/yield-summary",
+  validateParams(addressParamSchema),
+  getUserYieldSummary,
 );
 usersRouter.get(
   "/:address/kyc-history",

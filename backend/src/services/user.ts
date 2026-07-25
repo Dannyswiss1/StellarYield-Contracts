@@ -77,6 +77,24 @@ export class UserService {
     return totalPendingYield.toString();
   }
 
+  async getUserYieldSummary(address: string): Promise<{
+    totalClaimed: string;
+    totalPendingYield: string;
+  }> {
+    const claimedRows = await query<{ total_claimed: string }>(
+      `SELECT COALESCE(SUM((payload->>'amount')::numeric), 0)::text AS total_claimed
+       FROM indexed_events
+       WHERE event_type IN ('yield_claimed', 'yield_claimed_partial')
+         AND (payload->>'user' = $1 OR payload->>'address' = $1)`,
+      [address],
+    );
+
+    const totalClaimed = claimedRows[0]?.total_claimed ?? "0";
+    const totalPendingYield = await this.getTotalPendingYield(address);
+
+    return { totalClaimed, totalPendingYield };
+  }
+
   async getUserPortfolio(address: string): Promise<UserPortfolioResponse> {
     const positions = await query<{
       id: number;
@@ -285,7 +303,7 @@ export class UserService {
     }>(
       `SELECT contract_id, event_type, payload, created_at
        FROM indexed_events
-       WHERE event_type IN ('yield_clm', 'prt_yld')
+       WHERE event_type IN ('yield_claimed', 'yield_claimed_partial')
          AND (payload->>'user' = $1 OR payload->>'address' = $1)
        ORDER BY (payload->>'timestamp')::numeric DESC NULLS LAST, created_at DESC
        LIMIT $2 OFFSET $3`,
@@ -295,7 +313,7 @@ export class UserService {
     const countResult = await query<{ count: string }>(
       `SELECT COUNT(*)::text AS count
        FROM indexed_events
-       WHERE event_type IN ('yield_clm', 'prt_yld')
+       WHERE event_type IN ('yield_claimed', 'yield_claimed_partial')
          AND (payload->>'user' = $1 OR payload->>'address' = $1)`,
       [address],
     );

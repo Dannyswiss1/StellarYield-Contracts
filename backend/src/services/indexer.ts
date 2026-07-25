@@ -517,14 +517,45 @@ export class Indexer {
     const yieldClaimed = parseYieldClaimedEvent(event);
     if (yieldClaimed) {
       await this.handleYieldClaimed(event.contractId ?? "", yieldClaimed.user, yieldClaimed.epoch);
-      await this.recordEvent(event, "yield_claimed");
+      await query(
+        `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
+         VALUES ($1, $2, $3, 'yield_claimed', $4)
+         ON CONFLICT DO NOTHING`,
+        [
+          event.ledger ?? 0,
+          event.id ?? event.txHash ?? "",
+          event.contractId ?? "",
+          JSON.stringify({
+            user: yieldClaimed.user,
+            amount: yieldClaimed.amount.toString(),
+            epoch: yieldClaimed.epoch,
+          }),
+        ],
+      );
+      indexerEventsProcessedTotal.inc();
       return;
     }
 
     const yieldClaimedPartial = parseYieldClaimedPartialEvent(event);
     if (yieldClaimedPartial) {
       await this.handleYieldClaimed(event.contractId ?? "", yieldClaimedPartial.user, yieldClaimedPartial.epoch);
-      await this.recordEvent(event, "yield_claimed_partial");
+      await query(
+        `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
+         VALUES ($1, $2, $3, 'yield_claimed_partial', $4)
+         ON CONFLICT DO NOTHING`,
+        [
+          event.ledger ?? 0,
+          event.id ?? event.txHash ?? "",
+          event.contractId ?? "",
+          JSON.stringify({
+            user: yieldClaimedPartial.user,
+            amount: yieldClaimedPartial.claimed.toString(),
+            shortfall: yieldClaimedPartial.shortfall.toString(),
+            epoch: yieldClaimedPartial.epoch,
+          }),
+        ],
+      );
+      indexerEventsProcessedTotal.inc();
       return;
     }
 
