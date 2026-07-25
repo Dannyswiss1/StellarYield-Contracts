@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getAdminStats, getAdminIndexer, getAdminEvents, getVaultAudit, backfillIndexer, deleteApiKey, getApiKeys, getWebhookDeliveries, getArchivedVaults, getTotalSupplyConsistency, getDbStats } from "../controllers/admin.js";
+import { getAdminStats, getAdminIndexer, getAdminEvents, getVaultAudit, backfillIndexer, deleteApiKey, getApiKeys, getWebhookDeliveries, getArchivedVaults, getTotalSupplyConsistency, getDbStats, streamIndexerProgress } from "../controllers/admin.js";
 import { requireApiKey } from "../middleware/auth.js";
 
 export const adminRouter = Router();
@@ -7,6 +7,7 @@ export const adminRouter = Router();
 adminRouter.use(requireApiKey({ role: "admin" }));
 
 adminRouter.get("/stats", getAdminStats);
+adminRouter.get("/indexer/stream", streamIndexerProgress);
 adminRouter.get("/indexer", getAdminIndexer);
 adminRouter.post("/indexer/backfill", backfillIndexer);
 adminRouter.get("/events", getAdminEvents);
