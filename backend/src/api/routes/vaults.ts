@@ -29,7 +29,6 @@ import {
   getMaturingSoonVaults,
   getFullyFundedVaults,
   getSimilarVaults,
-  streamVaultEvents,
   getVaultFees,
   getCooperatorFees,
 } from "../controllers/vaults.js";
@@ -85,7 +84,6 @@ const maturingSoonQuerySchema = z.object({
 export const vaultsRouter = Router();
 
 vaultsRouter.get("/categories", listCategories);
-vaultsRouter.get("/stream", streamVaultEvents);
 vaultsRouter.get("/", validateQuery(listVaultsQuerySchema), listVaults);
 vaultsRouter.get("/count", getVaultCount);
 // Search, filter, and discovery endpoints (#640–#643, #644, #645)

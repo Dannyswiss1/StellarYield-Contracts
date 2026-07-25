@@ -2,7 +2,6 @@ import type { Request, Response, NextFunction } from "express";
 import { UserService } from "../../services/user.js";
 import { readKycVerified } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
-import { sseManager } from "../../services/sseManager.js";
 
 const userService = new UserService();
 
@@ -10,8 +9,7 @@ export async function getUser(req: Request, res: Response, next: NextFunction) {
   try {
     const user = await userService.getUser(String(req.params["address"]));
     if (!user) {
-      res.status(404).json({ error: "NotFound", message: "User not found" });
-      return;
+      throw new AppError(ErrorCode.USER_NOT_FOUND, "User not found", 404);
     }
     res.json(user);
   } catch (err) {
@@ -219,8 +217,3 @@ export async function getKycBatch(req: Request, res: Response, next: NextFunctio
     next(err);
   }
 }
-
-export function streamUserPositions(req: Request, res: Response): void {
-  sseManager.addVaultClient(req, res);
-}
-

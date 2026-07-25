@@ -7,8 +7,10 @@ import {
   testWebhook,
   verifyWebhookSignature,
 } from "../controllers/webhooks.js";
+import { getWebhookStream } from "../controllers/webhooks-stream.js";
 import { requireApiKey } from "../middleware/auth.js";
 import { validateBody, validateParams } from "../middleware/validate.js";
+import { sseLimitPerIp } from "../middleware/sseLimitPerIp.js";
 
 const KNOWN_EVENTS = [
   "deposit",
@@ -54,6 +56,7 @@ webhooksRouter.use(requireApiKey());
 
 webhooksRouter.post("/", validateBody(createWebhookSchema), createWebhook);
 webhooksRouter.get("/", listWebhooks);
+webhooksRouter.get("/:id/stream", sseLimitPerIp(), validateParams(webhookParamsSchema), getWebhookStream);
 webhooksRouter.delete("/:id", validateParams(webhookParamsSchema), deleteWebhook);
 
 /** POST /webhooks/verify-signature — verify HMAC signature (#664) */
