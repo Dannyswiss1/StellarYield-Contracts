@@ -107,8 +107,9 @@ export async function getApiKeys(_req: Request, res: Response, next: NextFunctio
       label: string | null;
       role: string;
       created_at: Date;
+      expires_at: Date | null;
     }>(
-      "SELECT id, label, role, created_at FROM api_keys ORDER BY created_at DESC",
+      "SELECT id, label, role, created_at, expires_at FROM api_keys ORDER BY created_at DESC",
     );
 
     res.json(
@@ -117,6 +118,7 @@ export async function getApiKeys(_req: Request, res: Response, next: NextFunctio
         label: row.label,
         role: row.role,
         createdAt: row.created_at,
+        expiresAt: row.expires_at,
       })),
     );
   } catch (err) {
@@ -336,6 +338,66 @@ export async function getDbStats(_req: Request, res: Response, next: NextFunctio
         name: r.relname,
         rowEstimate: parseInt(r.n_live_tup, 10),
         totalSizeBytes: parseInt(r.total_bytes, 10),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/admin/fees
+ *
+ * Returns platform-wide fee analytics:
+ *   { totalOperatorFees, totalEarlyRedemptionFees, totalPlatformRevenue,
+ *     topFeeVaults }
+ *
+ * topFeeVaults = top 5 vaults by total operator fees.
+ * totalPlatformRevenue = totalOperatorFees + totalEarlyRedemptionFees.
+ *
+ * Issue #789
+ */
+export async function getAdminFees(_req: Request, res: Response, next: NextFunction) {
+  try {
+    // Total operator fees across all vaults from parsed_data
+    const operatorFeeRows = await query<{ total: string }>(
+      `SELECT COALESCE(SUM((parsed_data->>'operatorFee')::numeric), 0)::text AS total
+       FROM indexed_events
+       WHERE event_type = 'yield_distributed' AND parsed_data IS NOT NULL`,
+    );
+    const totalOperatorFees = operatorFeeRows[0]?.total ?? "0";
+
+    // Total early redemption fees from redemption_requests
+    const redemptionFeeRows = await query<{ total: string }>(
+      `SELECT COALESCE(SUM(fee_revenue), 0)::text AS total
+       FROM redemption_requests
+       WHERE processed = TRUE AND fee_revenue > 0`,
+    );
+    const totalEarlyRedemptionFees = redemptionFeeRows[0]?.total ?? "0";
+
+    const totalOperatorBig = BigInt(Math.round(parseFloat(totalOperatorFees)));
+    const totalRedemptionBig = BigInt(Math.round(parseFloat(totalEarlyRedemptionFees)));
+    const totalPlatformRevenue = (totalOperatorBig + totalRedemptionBig).toString();
+
+    // Top 5 vaults by total operator fees
+    const topFeeVaults = await query<{ contract_id: string; total_fees: string }>(
+      `SELECT
+         ie.contract_id,
+         COALESCE(SUM((ie.parsed_data->>'operatorFee')::numeric), 0)::text AS total_fees
+       FROM indexed_events ie
+       WHERE ie.event_type = 'yield_distributed' AND ie.parsed_data IS NOT NULL
+       GROUP BY ie.contract_id
+       ORDER BY SUM((ie.parsed_data->>'operatorFee')::numeric) DESC
+       LIMIT 5`,
+    );
+
+    res.json({
+      totalOperatorFees: totalOperatorBig.toString(),
+      totalEarlyRedemptionFees: totalRedemptionBig.toString(),
+      totalPlatformRevenue,
+      topFeeVaults: topFeeVaults.map((v) => ({
+        contractId: v.contract_id,
+        totalFees: v.total_fees,
       })),
     });
   } catch (err) {

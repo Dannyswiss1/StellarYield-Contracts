@@ -309,6 +309,15 @@ export async function readOperatorFeeBps(contractId: string): Promise<number> {
 }
 
 /**
+ * Read the cooperator fee in basis points from the contract.
+ * Returns 0 if not set.
+ */
+export async function readCooperatorFeeBps(contractId: string): Promise<number> {
+  const value = await simulateRead<number>(contractId, "cooperator_fee_bps");
+  return Number(value ?? 0);
+}
+
+/**
  * Read the funding deadline timestamp (unix seconds) from the contract.
  * Returns 0n when no deadline is configured.
  */
