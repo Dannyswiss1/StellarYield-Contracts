@@ -927,13 +927,47 @@ export class Indexer {
     }
     const vaultId = vaultRow[0].id;
 
-    await query(
-      `UPDATE redemption_requests SET processed = TRUE
-       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE`,
+    // Look up the redemption request to get shares for gross-asset computation
+    const reqRows = await query<{ shares: string }>(
+      `SELECT shares FROM redemption_requests
+       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE
+       LIMIT 1`,
       [vaultId, event.requestId],
     );
+
+    let feeRevenue = 0;
+    let grossAssets = 0;
+
+    if (reqRows.length > 0) {
+      const shares = toBigIntOrZero(reqRows[0].shares);
+
+      const vaultState = await query<{ total_assets: string; total_supply: string }>(
+        "SELECT total_assets::text, total_supply::text FROM vaults WHERE id = $1",
+        [vaultId],
+      );
+
+      if (vaultState.length > 0) {
+        const totalAssets = toBigIntOrZero(vaultState[0].total_assets);
+        const totalSupply = toBigIntOrZero(vaultState[0].total_supply);
+
+        // Compute gross assets at current exchange rate (1:1 when no supply)
+        const gross = totalSupply > 0n
+          ? (shares * totalAssets) / totalSupply
+          : shares;
+
+        grossAssets = Number(gross);
+        feeRevenue = grossAssets - Number(event.netAssets);
+        if (feeRevenue < 0) feeRevenue = 0;
+      }
+    }
+
+    await query(
+      `UPDATE redemption_requests SET processed = TRUE, fee_revenue = $3, gross_assets = $4
+       WHERE vault_id = $1 AND request_id = $2 AND processed = FALSE`,
+      [vaultId, event.requestId, feeRevenue, grossAssets],
+    );
     logger.info(
-      { contractId, user: event.user, requestId: event.requestId },
+      { contractId, user: event.user, requestId: event.requestId, feeRevenue },
       "Processed early_redemption_processed event",
     );
   }
