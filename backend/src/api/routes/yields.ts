@@ -6,7 +6,9 @@ import {
   getYieldSummary,
   getYieldPerShareHistory,
 } from "../controllers/yields.js";
+import { getYieldsStream } from "../controllers/yields-stream.js";
 import { validateQuery } from "../middleware/validate.js";
+import { sseLimitPerIp } from "../middleware/sseLimitPerIp.js";
 
 const epochQuerySchema = z.object({
   epoch: z.coerce.number().int().positive().optional(),
@@ -21,6 +23,7 @@ const yieldHistoryQuerySchema = z.object({
 
 export const yieldsRouter = Router();
 
+yieldsRouter.get("/stream", sseLimitPerIp(), getYieldsStream);
 yieldsRouter.get("/:contractId/summary", getYieldSummary);
 yieldsRouter.get("/:contractId/epochs", validateQuery(epochQuerySchema), getVaultEpochs);
 yieldsRouter.get("/:contractId/yield-per-share-history", validateQuery(yieldHistoryQuerySchema), getYieldPerShareHistory);

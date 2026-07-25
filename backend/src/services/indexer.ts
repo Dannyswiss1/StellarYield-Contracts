@@ -13,6 +13,7 @@ import { UserService } from "./user.js";
 import { NotificationService } from "./notifications.js";
 import { indexerEventsProcessedTotal, indexerLastLedger } from "./metrics.js";
 import { cacheDel } from "../cache/redis.js";
+import { sseService } from "./sse.js";
 
 // ── Upstream helpers ───────────────────────────────────────────────────────────
 
@@ -821,6 +822,16 @@ export class Indexer {
       "Processed yield_distributed event",
     );
     return { netYield: netYield.toString(), operatorFee: operatorFee.toString() };
+
+    sseService.broadcastEpochRecorded(contractId, {
+      type: "epoch_recorded",
+      contractId,
+      epoch: yieldDist.epoch,
+      yieldAmount: yieldDist.amount.toString(),
+      timestamp: new Date(Number(yieldDist.timestamp) * 1000).toISOString(),
+    });
+
+    return parsedData;
   }
 
   private async handleVaultCreated(
