@@ -231,6 +231,26 @@ export const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   SMTP_FROM: z.string().optional(),
   DEPLOY_ID: z.string().optional(),
+  // Outbound HTTP client (services/apiClient.ts). Base URL defaults to this
+  // server's own origin; the key is the bearer token it sends on every call.
+  API_CLIENT_BASE_URL: z
+    .string()
+    .optional()
+    .transform((v) => v ?? "")
+    .refine((v) => v === "" || /^https?:\/\/.+/.test(v), {
+      message: "API_CLIENT_BASE_URL must be an absolute http(s) URL",
+    }),
+  API_CLIENT_API_KEY: z.string().default(""),
+  API_CLIENT_TIMEOUT_MS: z
+    .string()
+    .default("10000")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(0)),
+  API_CLIENT_MAX_RETRIES: z
+    .string()
+    .default("3")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(0)),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -359,6 +379,12 @@ export const config = {
     user: parsed.data.SMTP_USER,
     pass: parsed.data.SMTP_PASS,
     from: parsed.data.SMTP_FROM,
+  },
+  apiClient: {
+    baseUrl: parsed.data.API_CLIENT_BASE_URL || `http://localhost:${parsed.data.PORT}`,
+    apiKey: parsed.data.API_CLIENT_API_KEY,
+    timeoutMs: parsed.data.API_CLIENT_TIMEOUT_MS,
+    maxRetries: parsed.data.API_CLIENT_MAX_RETRIES,
   },
   deployId: parsed.data.DEPLOY_ID ?? null,
 } as const;
