@@ -89,7 +89,7 @@ const nonNegativeAmountSchema = z
   .string()
   .regex(/^\d+$/, "must be a non-negative integer");
 
-const listVaultsQuerySchema = z
+export const listVaultsQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
@@ -143,7 +143,7 @@ const listVaultsQuerySchema = z
     }
   });
 
-const vaultParamsSchema = z.object({
+export const vaultParamsSchema = z.object({
   contractId: contractAddressSchema,
 });
 
@@ -177,7 +177,7 @@ const maturingSoonQuerySchema = z.object({
 });
 
 // Detail endpoint query params: allow `fields` (comma-separated) and `embed` (comma-separated)
-const vaultDetailQuerySchema = z.object({ fields: z.string().optional(), embed: z.string().optional() });
+export const vaultDetailQuerySchema = z.object({ fields: z.string().optional(), embed: z.string().optional() });
 
 // Metadata history endpoint (#973): page + pageSize (capped at 100)
 const metadataHistoryQuerySchema = z.object({

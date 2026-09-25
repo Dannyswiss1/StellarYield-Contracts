@@ -2776,3 +2776,65 @@ export function parseVaultNameUpdatedEvent(rawEvent: unknown): ParsedVaultNameUp
     return null;
   }
 }
+
+export interface ParsedFeeRateChangedEvent {
+  feeBps: number;
+  oldFeeBps: number | null;
+}
+
+/**
+ * Parse the `fee_set` (a.k.a. `fee_rate_changed`) event emitted by
+ * `set_early_redemption_fee`.
+ *
+ * The contract publishes the new fee in basis points as the event data. A
+ * `(old_fee_bps, new_fee_bps)` tuple or `{ oldFeeBps, feeBps }` map is also
+ * accepted so richer payloads decode without changes here. Returns null when
+ * the event is not a fee rate change or the fee is out of range (0–10000 bps).
+ */
+export function parseFeeRateChangedEvent(rawEvent: unknown): ParsedFeeRateChangedEvent | null {
+  try {
+    const parsed = parseRawEventName(rawEvent);
+    if (!parsed) return null;
+
+    const { topics, data } = parsed;
+    let eventName = "";
+    try {
+      const firstTopic = typeof topics[0] === "string"
+        ? xdr.ScVal.fromXDR(topics[0], "base64")
+        : (topics[0] as xdr.ScVal);
+      eventName = String(scValToNative(firstTopic) ?? "");
+    } catch {
+      return null;
+    }
+
+    if (eventName !== "fee_set" && eventName !== "fee_rate_changed") return null;
+
+    const parsedValue = typeof data === "string"
+      ? xdr.ScVal.fromXDR(data, "base64")
+      : (data as xdr.ScVal);
+    const native = scValToNative(parsedValue) as unknown;
+
+    let feeBps: number;
+    let oldFeeBps: number | null = null;
+    if (Array.isArray(native)) {
+      if (native.length < 2) return null;
+      oldFeeBps = Number(native[0]);
+      feeBps = Number(native[1]);
+    } else if (native !== null && typeof native === "object") {
+      const obj = native as Record<string, unknown>;
+      feeBps = Number(obj["feeBps"] ?? obj["fee_bps"] ?? obj["new_fee_bps"]);
+      const old = obj["oldFeeBps"] ?? obj["old_fee_bps"];
+      oldFeeBps = old === undefined ? null : Number(old);
+    } else {
+      feeBps = Number(native);
+    }
+
+    const valid = (n: number) => Number.isInteger(n) && n >= 0 && n <= 10_000;
+    if (!valid(feeBps)) return null;
+    if (oldFeeBps !== null && !valid(oldFeeBps)) return null;
+
+    return { feeBps, oldFeeBps };
+  } catch {
+    return null;
+  }
+}
