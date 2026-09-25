@@ -89,7 +89,7 @@ const nonNegativeAmountSchema = z
   .string()
   .regex(/^\d+$/, "must be a non-negative integer");
 
-const listVaultsQuerySchema = z
+export const listVaultsQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
@@ -143,7 +143,7 @@ const listVaultsQuerySchema = z
     }
   });
 
-const vaultParamsSchema = z.object({
+export const vaultParamsSchema = z.object({
   contractId: contractAddressSchema,
 });
 
@@ -177,12 +177,19 @@ const maturingSoonQuerySchema = z.object({
 });
 
 // Detail endpoint query params: allow `fields` (comma-separated) and `embed` (comma-separated)
-const vaultDetailQuerySchema = z.object({ fields: z.string().optional(), embed: z.string().optional() });
+export const vaultDetailQuerySchema = z.object({ fields: z.string().optional(), embed: z.string().optional() });
 
 // Metadata history endpoint (#973): page + pageSize (capped at 100)
 const metadataHistoryQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
+});
+
+// TVL history endpoint (#864): from/to range plus explicit bucket strategy.
+const tvlHistoryQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  bucket: z.enum(["hour", "day", "week"]).optional(),
 });
 
 export const vaultsRouter = Router();
@@ -269,7 +276,12 @@ vaultsRouter.get(
   getVaultMetadataHistory,
 );
 // Get vault TVL history: GET /api/v1/vaults/:contractId/tvl-history
-vaultsRouter.get("/:contractId/tvl-history", validateParams(vaultParamsSchema), getVaultTvlHistory);
+vaultsRouter.get(
+  "/:contractId/tvl-history",
+  validateParams(vaultParamsSchema),
+  validateQuery(tvlHistoryQuerySchema),
+  getVaultTvlHistory,
+);
 // Get compound projection: GET /api/v1/vaults/:contractId/compound-projection?shares=<amount>&epochs=<n>
 vaultsRouter.get("/:contractId/compound-projection", validateParams(vaultParamsSchema), getCompoundProjection);
 // Early redemption fee preview: GET /api/v1/vaults/:contractId/early-redemption-fee?shares=

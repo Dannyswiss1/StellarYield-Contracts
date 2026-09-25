@@ -9,6 +9,7 @@ import { logger } from "./logger.js";
 import { healthRouter } from "./api/routes/health.js";
 import { statusRouter } from "./api/routes/status.js";
 import { vaultsRouter } from "./api/routes/vaults.js";
+import { vaultsV2Router } from "./api/routes/v2/vaults.js";
 import { usersRouter } from "./api/routes/users.js";
 import { yieldsRouter } from "./api/routes/yields.js";
 import { adminRouter } from "./api/routes/admin.js";
@@ -115,9 +116,12 @@ export function createApp(): Express {
   });
 
   app.use("/health", publicLimiter, healthRouter);
+  // Versioned alias for SDK clients and integration tests (#874).
+  app.use("/api/v1/health", publicLimiter, healthRouter);
   app.use("/api/changelog", publicLimiter, changelogRouter);
   app.use("/api/status", publicLimiter, statusRouter);
   app.use("/api/v1/vaults", publicLimiter, vaultsRouter);
+  app.use("/api/v2/vaults", publicLimiter, vaultsV2Router);
   app.use("/api/v1/users", publicLimiter, usersRouter);
   app.use("/api/v1/yields", publicLimiter, yieldsRouter);
   app.use("/api/v1/analytics", publicLimiter, analyticsRouter);
