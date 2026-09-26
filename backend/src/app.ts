@@ -9,6 +9,7 @@ import { logger } from "./logger.js";
 import { healthRouter } from "./api/routes/health.js";
 import { statusRouter } from "./api/routes/status.js";
 import { vaultsRouter } from "./api/routes/vaults.js";
+import { platformFeesRouter, vaultFeesRouter } from "./api/routes/fees.js";
 import { vaultsV2Router } from "./api/routes/v2/vaults.js";
 import { usersRouter } from "./api/routes/users.js";
 import { yieldsRouter } from "./api/routes/yields.js";
@@ -122,6 +123,10 @@ export function createApp(): Express {
   app.use("/api/v1/health", publicLimiter, healthRouter);
   app.use("/api/changelog", publicLimiter, changelogRouter);
   app.use("/api/status", publicLimiter, statusRouter);
+  // Fee endpoints (#1099, #1101, #1102, #1103). Their paths all have a second
+  // segment, so they are mounted first and never shadow a /:contractId route.
+  app.use("/api/v1/platform", publicLimiter, platformFeesRouter);
+  app.use("/api/v1/vaults", publicLimiter, vaultFeesRouter);
   app.use("/api/v1/vaults", publicLimiter, vaultsRouter);
   app.use("/api/v2/vaults", publicLimiter, vaultsV2Router);
   app.use("/api/v1/users", publicLimiter, usersRouter);
