@@ -280,14 +280,20 @@ export async function getAdminStats(_req: Request, res: Response, next: NextFunc
     const archiveSizeRows = await query<{ total: string }>(
       "SELECT COALESCE(SUM(pg_total_relation_size(relid)), 0)::text AS total FROM pg_stat_user_tables WHERE relname LIKE '%_archive'",
     );
+    // Factory WASM hash from the most recent indexed update event (#837).
+    const wasmRows = await query<{ new_hash: string }>(
+      "SELECT new_hash FROM factory_wasm_history ORDER BY recorded_at DESC, id DESC LIMIT 1",
+    );
 
     const vaultCount = parseInt(vaultCountRows[0]?.count ?? "0", 10);
     const userCount = parseInt(userCountRows[0]?.count ?? "0", 10);
     const totalValueLocked = totalAssetsRows[0]?.total ?? "0";
     const epochCount = parseInt(epochCountRows[0]?.count ?? "0", 10);
     const archiveSizeBytes = parseInt(archiveSizeRows[0]?.total ?? "0", 10);
+    // Null until the first wasm_upd event has been indexed.
+    const wasmHash = wasmRows[0]?.new_hash ?? null;
 
-    res.json({ vaultCount, userCount, totalValueLocked, epochCount, archiveSizeBytes });
+    res.json({ vaultCount, userCount, totalValueLocked, epochCount, archiveSizeBytes, wasmHash });
   } catch (err) {
     next(err);
   }

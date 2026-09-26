@@ -700,6 +700,17 @@ export class Indexer {
       return;
     }
 
+    const wasmHashUpdated = parseWasmHashUpdatedEvent(event);
+    if (wasmHashUpdated) {
+      await this.handleWasmHashUpdated(event.ledger ?? 0, wasmHashUpdated);
+      await this.recordEvent(event, "wasm_upd", {
+        oldHash: wasmHashUpdated.oldHash,
+        newHash: wasmHashUpdated.newHash,
+        updatedBy: wasmHashUpdated.updatedBy,
+      });
+      return;
+    }
+
     const kycSet = parseKycSetEvent(event);
     if (kycSet) {
       await this.handleKycSet(event.contractId ?? "", kycSet);
@@ -1468,6 +1479,21 @@ export class Indexer {
       [ev.oldAdmin, ev.newAdmin, ledger],
     );
     logger.info({ oldAdmin: ev.oldAdmin, newAdmin: ev.newAdmin, ledger }, "Processed adm_xfr event");
+  }
+
+  private async handleWasmHashUpdated(
+    ledger: number,
+    ev: { oldHash: string; newHash: string; updatedBy: string },
+  ): Promise<void> {
+    await query(
+      `INSERT INTO factory_wasm_history (old_hash, new_hash, updated_by, ledger, recorded_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [ev.oldHash, ev.newHash, ev.updatedBy, ledger],
+    );
+    logger.info(
+      { oldHash: ev.oldHash, newHash: ev.newHash, updatedBy: ev.updatedBy, ledger },
+      "Processed wasm_upd event",
+    );
   }
 
   private async handleKycSet(
@@ -2478,6 +2504,79 @@ export function parseDefaultsUpdatedEvent(rawEvent: unknown): ParsedDefaultsUpda
   } catch {
     return null;
   }
+}
+
+// ── Issue #837: parseWasmHashUpdatedEvent ─────────────────────────────────────
+
+export interface ParsedWasmHashUpdatedEvent {
+  oldHash: string;
+  newHash: string;
+  updatedBy: string;
+}
+
+/**
+ * Parse the factory's `wasm_upd` event: topics are
+ * `(symbol!("wasm_upd"), updated_by)` and the value is `(old_hash, new_hash)`.
+ */
+export function parseWasmHashUpdatedEvent(rawEvent: unknown): ParsedWasmHashUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 1 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "wasm_upd" && eventName !== "wasm_hash_updated") return null;
+
+    let updatedBy = "";
+    if (topics.length > 1) {
+      try {
+        updatedBy = String(scValToNative(parsedTopics[1]) ?? "");
+      } catch {
+        updatedBy = "";
+      }
+    }
+
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+    const oldHash = normalizeHash(arr[0]);
+    const newHash = normalizeHash(arr[1]);
+
+    if (!newHash) return null;
+
+    return { oldHash, newHash, updatedBy };
+  } catch {
+    return null;
+  }
+}
+
+/** Render a hash ScVal as a lowercase hex string, tolerating Buffer/bytes input. */
+function normalizeHash(value: unknown): string {
+  if (value == null) return "";
+  if (Buffer.isBuffer(value)) return value.toString("hex");
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("hex");
+  if (Array.isArray(value)) {
+    try {
+      return Buffer.from(value as number[]).toString("hex");
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
 }
 
 // ── Issue #594: role events ─────────────────────────────────────────────────
