@@ -23,7 +23,7 @@ import { debugRoutesHandler } from "./api/routes/debugRoutes.js";
 import { analyticsRouter } from "./api/routes/analytics.js";
 import { proxyRouter } from "./api/routes/proxy.js";
 import { featureFlagsRouter } from "./api/routes/featureFlags.js";
-import { errorHandler } from "./api/middleware/errors.js";
+import { errorHandler, notFoundHandler } from "./api/middleware/errors.js";
 import { requestId } from "./api/middleware/requestId.js";
 import { requestContext } from "./api/middleware/requestContext.js";
 import { responseSizeLimit } from "./api/middleware/responseSizeLimit.js";
@@ -164,6 +164,9 @@ export function createApp(): Express {
 
   setupOpenApiRoutes(app);
 
+  // Unmatched paths become a 404 AppError so the error handler records them in
+  // http_errors_total (#831) instead of Express's default plain-text 404.
+  app.use(notFoundHandler);
   // Route introspection for debugging (#1137). Never exposed in production.
   if (config.nodeEnv !== "production") {
     app.get("/_debug/routes", debugRoutesHandler(app));
