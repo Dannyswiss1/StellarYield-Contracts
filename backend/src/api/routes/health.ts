@@ -55,3 +55,63 @@ healthRouter.get("/", async (_req, res) => {
     res.status(503).json({ version, status: "error", dbPool, factory, sseConnections });
   }
 });
+
+const DEPENDENCY_CHECK_TIMEOUT_MS = 3000;
+
+interface DependencyStatus {
+  status: "ok" | "error" | "unconfigured";
+  latencyMs: number | null;
+  error?: string;
+}
+
+/** Run one dependency probe, bounded by a timeout, and record how long it took. */
+async function probe(check: () => Promise<unknown>): Promise<DependencyStatus> {
+  const started = Date.now();
+  try {
+    await Promise.race([
+      check(),
+      new Promise((_resolve, reject) =>
+        setTimeout(() => reject(new Error("timed out")), DEPENDENCY_CHECK_TIMEOUT_MS),
+      ),
+    ]);
+    return { status: "ok", latencyMs: Date.now() - started };
+  } catch (err) {
+    return {
+      status: "error",
+      latencyMs: Date.now() - started,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Per-dependency health (#1135): reports the database, the Stellar RPC and the
+ * vault factory contract separately, each with its own latency, so an operator
+ * can tell which one is down. Returns 503 if any configured dependency fails.
+ */
+healthRouter.get("/dependencies", async (_req, res) => {
+  const contractId = config.stellar.vaultFactoryContractId || null;
+
+  const [database, stellarRpc, factory] = await Promise.all([
+    probe(() => pool.query("SELECT 1")),
+    probe(async () => {
+      const response = await fetch(config.stellar.rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    }),
+    contractId
+      ? probe(() => readTotalVaults(contractId))
+      : Promise.resolve<DependencyStatus>({ status: "unconfigured", latencyMs: null }),
+  ]);
+
+  const dependencies = { database, stellarRpc, factory };
+  const healthy = Object.values(dependencies).every((d) => d.status !== "error");
+  res.status(healthy ? 200 : 503).json({
+    version,
+    status: healthy ? "ok" : "error",
+    dependencies,
+  });
+});
