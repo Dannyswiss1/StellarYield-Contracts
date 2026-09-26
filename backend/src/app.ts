@@ -9,6 +9,7 @@ import { logger } from "./logger.js";
 import { healthRouter } from "./api/routes/health.js";
 import { statusRouter } from "./api/routes/status.js";
 import { vaultsRouter } from "./api/routes/vaults.js";
+import { platformFeesRouter, vaultFeesRouter } from "./api/routes/fees.js";
 import { vaultsV2Router } from "./api/routes/v2/vaults.js";
 import { usersRouter } from "./api/routes/users.js";
 import { yieldsRouter } from "./api/routes/yields.js";
@@ -21,6 +22,7 @@ import { codegenRouter } from "./api/routes/codegen.js";
 import { notificationsRouter } from "./api/routes/notifications.js";
 import { debugRoutesHandler } from "./api/routes/debugRoutes.js";
 import { analyticsRouter } from "./api/routes/analytics.js";
+import { platformStatsRouter, userVaultActivityRouter } from "./api/routes/platformStats.js";
 import { proxyRouter } from "./api/routes/proxy.js";
 import { featureFlagsRouter } from "./api/routes/featureFlags.js";
 import { errorHandler, notFoundHandler } from "./api/middleware/errors.js";
@@ -122,11 +124,18 @@ export function createApp(): Express {
   app.use("/api/v1/health", publicLimiter, healthRouter);
   app.use("/api/changelog", publicLimiter, changelogRouter);
   app.use("/api/status", publicLimiter, statusRouter);
+  // Fee endpoints (#1099, #1101, #1102, #1103). Their paths all have a second
+  // segment, so they are mounted first and never shadow a /:contractId route.
+  app.use("/api/v1/platform", publicLimiter, platformFeesRouter);
+  app.use("/api/v1/vaults", publicLimiter, vaultFeesRouter);
   app.use("/api/v1/vaults", publicLimiter, vaultsRouter);
   app.use("/api/v2/vaults", publicLimiter, vaultsV2Router);
   app.use("/api/v1/users", publicLimiter, usersRouter);
   app.use("/api/v1/yields", publicLimiter, yieldsRouter);
   app.use("/api/v1/analytics", publicLimiter, analyticsRouter);
+  // Platform metrics (#1084, #1085, #1086) and user vault activity (#1083).
+  app.use("/api/v1/platform", publicLimiter, platformStatsRouter);
+  app.use("/api/v1/users", publicLimiter, userVaultActivityRouter);
   app.use("/api/v1/factory", publicLimiter, factoryRouter);
   app.use("/api/v1/proxy", authLimiter, proxyRouter);
   app.use("/api/v1/admin/notifications", authLimiter, notificationsRouter);

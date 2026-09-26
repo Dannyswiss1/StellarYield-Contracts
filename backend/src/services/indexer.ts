@@ -928,13 +928,15 @@ export class Indexer {
     deposit: { caller: string; receiver: string; assets: bigint; shares: bigint },
   ): Promise<void> {
     await query(
-      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited, updated_at)
-       SELECT $1, v.id, $2, $3, NOW()
+      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited, updated_at, first_entry_at)
+       SELECT $1, v.id, $2, $3, NOW(), NOW()
        FROM vaults v WHERE v.contract_id = $4
        ON CONFLICT (user_address, vault_id)
        DO UPDATE SET
          shares    = user_vault_positions.shares    + EXCLUDED.shares,
          deposited = user_vault_positions.deposited + EXCLUDED.deposited,
+         first_entry_at = COALESCE(user_vault_positions.first_entry_at, NOW()),
+         last_exit_at = NULL,
          updated_at = NOW()`,
       [deposit.receiver, deposit.shares.toString(), deposit.assets.toString(), contractId],
     );
@@ -990,12 +992,13 @@ export class Indexer {
     withdraw: { owner: string; assets: bigint; shares: bigint },
   ): Promise<void> {
     await query(
-      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited)
-       SELECT $1, v.id, 0, 0
+      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited, last_exit_at)
+       SELECT $1, v.id, 0, 0, NOW()
        FROM vaults v WHERE v.contract_id = $4
        ON CONFLICT (user_address, vault_id) DO UPDATE SET
          shares    = GREATEST(0, user_vault_positions.shares    - $2),
          deposited = GREATEST(0, user_vault_positions.deposited - $3),
+         last_exit_at = CASE WHEN GREATEST(0, user_vault_positions.shares - $2) = 0 THEN NOW() ELSE NULL END,
          updated_at = NOW()`,
       [withdraw.owner, withdraw.shares.toString(), withdraw.assets.toString(), contractId],
     );
