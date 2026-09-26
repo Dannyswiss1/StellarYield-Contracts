@@ -6,10 +6,13 @@ import { warmUpPool } from "./db/index.js";
 import { indexer } from "./services/indexerSingleton.js";
 import { jobQueue } from "./services/jobQueue.js";
 import { EventsPruner } from "./services/eventsPruner.js";
+import { JobQueueDepthPoller } from "./services/jobQueueDepthPoller.js";
 import { runDeploymentBenchmarksIfNeeded } from "./services/queryBenchmarks.js";
 
 const app = createApp();
 const pruner = new EventsPruner();
+// pg-boss queue depth gauges for /metrics (#1093)
+const jobQueueDepthPoller = new JobQueueDepthPoller();
 
 // Establish the configured number of pool connections before we start accepting
 // traffic, so cold-start requests don't time out waiting on connection setup
@@ -30,12 +33,14 @@ const server = app.listen(config.port, async () => {
   void runDeploymentBenchmarksIfNeeded();
   void indexer.start();
   pruner.start();
+  jobQueueDepthPoller.start();
 });
 
 async function shutdown(): Promise<void> {
   logger.info("Shutting down");
   indexer.stop();
   pruner.stop();
+  jobQueueDepthPoller.stop();
   await jobQueue.stop();
   server.close(() => {
     logger.info("StellarYield backend stopped");

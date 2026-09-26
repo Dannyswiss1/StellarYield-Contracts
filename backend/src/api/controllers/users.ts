@@ -5,6 +5,7 @@ import { readKycVerified } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
 import { AppError, ErrorCode } from "../middleware/errors.js";
 import { userServiceInstance } from "../../services/userSingleton.js";
+import { decrementSseConnections, incrementSseConnections } from "../../services/metrics.js";
 
 const userService = new UserService();
 
@@ -463,6 +464,10 @@ export async function streamUserPositions(req: Request, res: Response, next: Nex
 
     res.write(`data: ${JSON.stringify({ type: "initial", portfolio })}\n\n`);
 
+    // This stream is written straight to the response instead of going through
+    // SseManager/SseService, so the connection gauge is maintained here (#1092).
+    incrementSseConnections();
+
     const unsubscribe = userServiceInstance.onPositionUpdate(address, (position) => {
       const event = {
         type: "position_updated",
@@ -475,6 +480,7 @@ export async function streamUserPositions(req: Request, res: Response, next: Nex
 
     req.on("close", () => {
       unsubscribe();
+      decrementSseConnections();
       res.end();
     });
   } catch (err) {
