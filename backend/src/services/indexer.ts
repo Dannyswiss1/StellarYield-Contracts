@@ -673,6 +673,27 @@ export class Indexer {
       return;
     }
 
+    const pauseReasonSet = parsePauseReasonSetEvent(event);
+    if (pauseReasonSet) {
+      await this.handlePauseReasonSet(event.contractId ?? "", pauseReasonSet);
+      await this.recordEvent(event, "pause_reason_set");
+      return;
+    }
+
+    const redemptionQueueUpdated = parseRedemptionQueueUpdatedEvent(event);
+    if (redemptionQueueUpdated) {
+      await this.handleRedemptionQueueUpdated(event.contractId ?? "", redemptionQueueUpdated);
+      await this.recordEvent(event, "redemption_queue_updated");
+      return;
+    }
+
+    const minimumDepositUpdated = parseMinimumDepositUpdatedEvent(event);
+    if (minimumDepositUpdated) {
+      await this.handleMinimumDepositUpdated(event.contractId ?? "", minimumDepositUpdated);
+      await this.recordEvent(event, "minimum_deposit_updated");
+      return;
+    }
+
     const zkmeUpd = parseZkmeVerifierUpdatedEvent(event);
     if (zkmeUpd) {
       await this.handleZkmeVerifierUpdated(event.contractId ?? "", zkmeUpd);
@@ -1454,6 +1475,67 @@ export class Indexer {
     logger.info(
       { contractId, oldFeeBps: ev.oldFeeBps, newFeeBps: ev.newFeeBps },
       "Processed operator_fee_updated event",
+    );
+  }
+
+  // ── #1098: handlePauseReasonSet ──────────────────────────────────────────────
+
+  private async handlePauseReasonSet(
+    contractId: string,
+    ev: { caller: string; reason: string },
+  ): Promise<void> {
+    await query(
+      `UPDATE vaults SET pause_reason = $1, updated_at = NOW() WHERE contract_id = $2`,
+      [ev.reason || null, contractId],
+    );
+    await cacheDel(`vault:${contractId}`);
+    logger.info(
+      { contractId, reason: ev.reason },
+      "Processed pause_reason_set event",
+    );
+  }
+
+  // ── #1097: handleRedemptionQueueUpdated ──────────────────────────────────────
+
+  private async handleRedemptionQueueUpdated(
+    contractId: string,
+    ev: { address: string; amount: bigint; position: number; status: string },
+  ): Promise<void> {
+    await query(
+      `INSERT INTO redemption_queue (contract_id, address, amount, position, status, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (contract_id, address) DO UPDATE SET
+         amount = EXCLUDED.amount,
+         position = EXCLUDED.position,
+         status = EXCLUDED.status,
+         updated_at = NOW()`,
+      [contractId, ev.address, ev.amount.toString(), ev.position, ev.status],
+    );
+    logger.info(
+      { contractId, address: ev.address, position: ev.position, status: ev.status },
+      "Processed redemption_queue_updated event",
+    );
+  }
+
+  // ── #1096: handleMinimumDepositUpdated ──────────────────────────────────────
+
+  private async handleMinimumDepositUpdated(
+    contractId: string,
+    ev: { caller: string; oldMinimum: bigint; newMinimum: bigint },
+  ): Promise<void> {
+    await query(
+      `UPDATE vaults SET minimum_deposit = $1, updated_at = NOW() WHERE contract_id = $2`,
+      [ev.newMinimum.toString(), contractId],
+    );
+    await query(
+      `INSERT INTO minimum_deposit_history (contract_id, old_minimum, new_minimum, changed_by, recorded_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [contractId, ev.oldMinimum.toString(), ev.newMinimum.toString(), ev.caller],
+    );
+    await cacheDel(`vault:${contractId}`);
+    logger.info(
+      { contractId, oldMinimum: ev.oldMinimum.toString(), newMinimum: ev.newMinimum.toString() },
+      "Processed minimum_deposit_updated event",
     );
   }
 
@@ -2933,6 +3015,139 @@ export function parseFeeRateChangedEvent(rawEvent: unknown): ParsedFeeRateChange
     if (oldFeeBps !== null && !valid(oldFeeBps)) return null;
 
     return { feeBps, oldFeeBps };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1098: parsePauseReasonSetEvent ──────────────────────────────────────────
+
+export interface ParsedPauseReasonSetEvent {
+  caller: string;
+  reason: string;
+}
+
+export function parsePauseReasonSetEvent(rawEvent: unknown): ParsedPauseReasonSetEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "pause_reason_set") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const reason = String(Array.isArray(data) ? data[0] ?? "" : data ?? "");
+
+    return { caller, reason };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1097: parseRedemptionQueueUpdatedEvent ──────────────────────────────────
+
+export interface ParsedRedemptionQueueUpdatedEvent {
+  address: string;
+  amount: bigint;
+  position: number;
+  status: string;
+}
+
+export function parseRedemptionQueueUpdatedEvent(rawEvent: unknown): ParsedRedemptionQueueUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 1 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "redemption_queue_updated") return null;
+
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+
+    const address = String(arr[0] ?? "");
+    const amount = decodeBigInt(arr[1]);
+    const position = Number(decodeBigInt(arr[2]));
+    const status = String(arr[3] ?? "pending");
+
+    return { address, amount, position, status };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1096: parseMinimumDepositUpdatedEvent ──────────────────────────────────
+
+export interface ParsedMinimumDepositUpdatedEvent {
+  caller: string;
+  oldMinimum: bigint;
+  newMinimum: bigint;
+}
+
+export function parseMinimumDepositUpdatedEvent(rawEvent: unknown): ParsedMinimumDepositUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "minimum_deposit_updated") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+
+    const oldMinimum = decodeBigInt(arr[0]);
+    const newMinimum = decodeBigInt(arr[1]);
+
+    return { caller, oldMinimum, newMinimum };
   } catch {
     return null;
   }
