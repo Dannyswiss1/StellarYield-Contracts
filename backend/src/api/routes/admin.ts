@@ -47,6 +47,7 @@ import {
 import { getRequestArchive } from "../controllers/debugArchive.js";
 import { postArchiveRestore, getArchiveStatusHandler } from "../controllers/archiveAdmin.js";
 import { requireApiKey } from "../middleware/auth.js";
+import { adminFeesRouter } from "./fees.js";
 import { ipAllowlist } from "../middleware/ipAllowlist.js";
 import { config } from "../../config.js";
 import { jobQueue } from "../../services/jobQueue.js";
@@ -129,3 +130,6 @@ adminRouter.get("/archive/status", requireApiKey({ minRole: "readonly" }), getAr
 adminRouter.post("/archive/restore", requireApiKey({ role: "admin" }), postArchiveRestore);
 // #922 — Archive status
 adminRouter.get("/archive/status", requireApiKey({ minRole: "readonly" }), getArchiveStatusHandler);
+
+// Fee tiers and fee rebates (#1099, #1103)
+adminRouter.use("/vaults", adminFeesRouter);
