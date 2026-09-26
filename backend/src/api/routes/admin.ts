@@ -5,6 +5,9 @@ import {
   getAdminEvents,
   getVaultAudit,
   backfillIndexer,
+  pauseContractIndexing,
+  resumeContractIndexing,
+  setContractEventFilter,
   deleteApiKey,
   getApiKeys,
   updateApiKeyDescription,
@@ -73,6 +76,10 @@ adminRouter.post("/vaults/reindex", requireApiKey({ role: "admin" }), async (req
   res.json({ success: true });
 });
 adminRouter.post("/indexer/backfill", requireApiKey({ role: "admin" }), backfillIndexer);
+// Per-contract indexer controls (#1106, #1107)
+adminRouter.post("/indexer/:contractId/pause", requireApiKey({ role: "admin" }), pauseContractIndexing);
+adminRouter.post("/indexer/:contractId/resume", requireApiKey({ role: "admin" }), resumeContractIndexing);
+adminRouter.patch("/indexer/:contractId/event-filter", requireApiKey({ role: "admin" }), setContractEventFilter);
 adminRouter.get("/events", getAdminEvents);
 adminRouter.get("/vaults/:contractId/audit", getVaultAudit);
 adminRouter.get("/vaults/archived", getArchivedVaults);

@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   getPlatformFees,
   getFeeAccrualEstimate,
+  getFeeRevenue,
   listFeeRebates,
   listFeeTiers,
   createFeeRebate,
@@ -21,6 +22,7 @@ platformFeesRouter.get("/fees", getPlatformFees);
 export const vaultFeesRouter = Router();
 vaultFeesRouter.get("/:contractId/fee-accrual-estimate", getFeeAccrualEstimate); // #1102
 vaultFeesRouter.get("/:contractId/fee-rebates", listFeeRebates); // #1103
+vaultFeesRouter.get("/:contractId/fee-revenue", getFeeRevenue); // #1104
 vaultFeesRouter.get("/:contractId/fee-tiers", listFeeTiers); // #1099
 
 /**

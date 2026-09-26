@@ -297,3 +297,78 @@ describe("fee tiers (#1099)", () => {
     expect(missing.status).toBe(404);
   });
 });
+
+describe("GET /api/v1/vaults/:contractId/fee-revenue (#1104)", () => {
+  it("returns one point per day, zero-filled days included", async () => {
+    vaultExists();
+    mocks.query.mockResolvedValueOnce([
+      { date: "2026-09-01", fees: "0" },
+      { date: "2026-09-02", fees: "150" },
+      { date: "2026-09-03", fees: "0" },
+    ]);
+
+    const res = await request(makeApp()).get(
+      `/api/v1/vaults/${VAULT}/fee-revenue?from=2026-09-01&to=2026-09-03&interval=1d`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { date: "2026-09-01", feesUsd: "0" },
+      { date: "2026-09-02", feesUsd: "150" },
+      { date: "2026-09-03", feesUsd: "0" },
+    ]);
+    const [sql, params] = mocks.query.mock.calls[1];
+    expect(params).toEqual(["2026-09-01", "2026-09-03", "day", "1 day", VAULT]);
+    expect(sql).toContain("FROM generate_series");
+    expect(sql).toContain("LEFT JOIN transfer_fees");
+    expect(sql).toContain("COALESCE(SUM(tf.fee_amount), 0)");
+  });
+
+  it("buckets by ISO week for interval=7d", async () => {
+    vaultExists();
+    mocks.query.mockResolvedValueOnce([{ date: "2026-08-31", fees: "175" }]);
+
+    const res = await request(makeApp()).get(
+      `/api/v1/vaults/${VAULT}/fee-revenue?from=2026-09-01&to=2026-09-06&interval=7d`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ date: "2026-08-31", feesUsd: "175" }]);
+    expect(mocks.query.mock.calls[1][1]).toEqual(["2026-09-01", "2026-09-06", "week", "7 days", VAULT]);
+  });
+
+  it("defaults to a daily series over the last 30 days", async () => {
+    vaultExists();
+    mocks.query.mockResolvedValueOnce([]);
+
+    const res = await request(makeApp()).get(`/api/v1/vaults/${VAULT}/fee-revenue`);
+
+    expect(res.status).toBe(200);
+    const [, params] = mocks.query.mock.calls[1];
+    const [from, to, trunc] = params as string[];
+    expect(trunc).toBe("day");
+    expect((Date.parse(to) - Date.parse(from)) / 86_400_000).toBe(29);
+  });
+
+  it("returns 404 for an unknown vault", async () => {
+    vaultMissing();
+    const res = await request(makeApp()).get(`/api/v1/vaults/${VAULT}/fee-revenue`);
+    expect(res.status).toBe(404);
+  });
+
+  it.each([
+    ["interval=30d", "unsupported interval"],
+    ["from=2026-09-10&to=2026-09-01", "from after to"],
+    ["from=2024-01-01&to=2026-01-01", "range over 366 days"],
+    ["from=yesterday", "non-ISO date"],
+  ])("rejects %s with 400 (%s)", async (qs) => {
+    const res = await request(makeApp()).get(`/api/v1/vaults/${VAULT}/fee-revenue?${qs}`);
+    expect(res.status).toBe(400);
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed contract ID with 400", async () => {
+    const res = await request(makeApp()).get("/api/v1/vaults/bad/fee-revenue");
+    expect(res.status).toBe(400);
+  });
+});
