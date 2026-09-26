@@ -1,3 +1,4 @@
+import { serverTiming } from "./api/middleware/serverTiming.js";
 import compression from "compression";
 import cors from "cors";
 import express, { type Express } from "express";
@@ -89,6 +90,7 @@ export function createApp(): Express {
     }));
   }
 
+  app.use(serverTiming);
   app.use(requestId);
   app.use(requestContext);
   app.use(responseSla);
