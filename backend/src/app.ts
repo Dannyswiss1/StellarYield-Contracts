@@ -18,6 +18,7 @@ import { webhooksRouter } from "./api/routes/webhooks.js";
 import { validateRouter } from "./api/routes/validate.js";
 import { codegenRouter } from "./api/routes/codegen.js";
 import { notificationsRouter } from "./api/routes/notifications.js";
+import { debugRoutesHandler } from "./api/routes/debugRoutes.js";
 import { analyticsRouter } from "./api/routes/analytics.js";
 import { proxyRouter } from "./api/routes/proxy.js";
 import { featureFlagsRouter } from "./api/routes/featureFlags.js";
@@ -159,6 +160,11 @@ export function createApp(): Express {
   });
 
   setupOpenApiRoutes(app);
+
+  // Route introspection for debugging (#1137). Never exposed in production.
+  if (config.nodeEnv !== "production") {
+    app.get("/_debug/routes", debugRoutesHandler(app));
+  }
 
   app.use(errorHandler);
 
