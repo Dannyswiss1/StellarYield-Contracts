@@ -16,8 +16,10 @@ import { adminRouter } from "./api/routes/admin.js";
 import { factoryRouter } from "./api/routes/factory.js";
 import { webhooksRouter } from "./api/routes/webhooks.js";
 import { validateRouter } from "./api/routes/validate.js";
+import { utilsRouter } from "./api/routes/utils.js";
 import { codegenRouter } from "./api/routes/codegen.js";
 import { notificationsRouter } from "./api/routes/notifications.js";
+import { debugRoutesHandler } from "./api/routes/debugRoutes.js";
 import { analyticsRouter } from "./api/routes/analytics.js";
 import { proxyRouter } from "./api/routes/proxy.js";
 import { featureFlagsRouter } from "./api/routes/featureFlags.js";
@@ -135,6 +137,8 @@ export function createApp(): Express {
   app.use("/api/v1/webhooks", authLimiter, webhooksRouter);
   // Request body dry run — validation only, never a side effect (#941)
   app.use("/api/v1/validate", publicLimiter, validateRouter);
+  // Display-formatting utilities (#1132)
+  app.use("/api/v1/utils", publicLimiter, utilsRouter);
   // SDK snippet generator — curl / TypeScript codegen from the OpenAPI spec (#943)
   app.use("/api/v1/codegen", publicLimiter, codegenRouter);
   app.use("/internal", authLimiter, internalAuth, internalRouter);
@@ -163,6 +167,11 @@ export function createApp(): Express {
   // Unmatched paths become a 404 AppError so the error handler records them in
   // http_errors_total (#831) instead of Express's default plain-text 404.
   app.use(notFoundHandler);
+  // Route introspection for debugging (#1137). Never exposed in production.
+  if (config.nodeEnv !== "production") {
+    app.get("/_debug/routes", debugRoutesHandler(app));
+  }
+
   app.use(errorHandler);
 
   return app;
