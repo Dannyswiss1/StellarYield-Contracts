@@ -13,6 +13,10 @@ import {
   getUserPortfolioAllocation,
   getUserPortfolioDiversification,
   getUserPortfolioPnl,
+  getUserPortfolioValue,
+  getUserPortfolioHistory,
+  getUserFirstDeposit,
+  getUserRealizedYield,
   getUserShareHistory,
   getUserYieldHistory,
   getUserYieldSummary,
@@ -88,6 +92,17 @@ const yieldBreakdownQuerySchema = z.object({
     .string()
     .length(56)
     .regex(/^C[A-Z2-7]{55}$/, "Invalid vault contract ID"),
+});
+
+const portfolioHistoryQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  interval: z.enum(["1d", "7d"]).default("1d"),
+});
+
+const realizedYieldQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
 });
 
 usersRouter.get("/", validateQuery(searchQuerySchema), searchUsers);
@@ -202,4 +217,26 @@ usersRouter.get(
   "/:address/stream",
   validateParams(addressParamSchema),
   streamUserPositions,
+);
+usersRouter.get(
+  "/:address/portfolio/value",
+  validateParams(addressParamSchema),
+  getUserPortfolioValue,
+);
+usersRouter.get(
+  "/:address/portfolio/history",
+  validateParams(addressParamSchema),
+  validateQuery(portfolioHistoryQuerySchema),
+  getUserPortfolioHistory,
+);
+usersRouter.get(
+  "/:address/first-deposit",
+  validateParams(addressParamSchema),
+  getUserFirstDeposit,
+);
+usersRouter.get(
+  "/:address/realized-yield",
+  validateParams(addressParamSchema),
+  validateQuery(realizedYieldQuerySchema),
+  getUserRealizedYield,
 );
