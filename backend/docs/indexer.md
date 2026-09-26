@@ -19,7 +19,9 @@ checks between iterations.
 `start()`:
 
 1. Reads the last indexed ledger from the `indexer_state` table (`getLastIndexedLedger()`),
-   falling back to `INDEXER_START_LEDGER` if no row exists yet.
+   falling back to `INDEXER_START_LEDGER` if no row exists yet. While that cursor is still
+   `0` — no progress recorded yet — the configured start block is used as the origin
+   instead (see [Start block configuration](#start-block-configuration)).
 2. If `VAULT_FACTORY_CONTRACT_ID` is not configured, the indexer runs in **state-only mode**:
    it loops calling `tickStateOnly()`, which only advances `lastLedger` to the chain tip
    without fetching or processing any events. This exists so the service still starts up
@@ -68,6 +70,21 @@ Backfill runs in two situations:
   `indexerBackfillWorker.ts#processIndexerBackfill`, which calls `indexer.queueBackfill(from, to)`.
   Queuing (rather than an inline HTTP-triggered backfill) means the job survives an API
   process restart and the request range is capped at 10,000 ledgers.
+
+## Start block configuration
+
+The ledger a **fresh** indexing run starts from is runtime-configurable (#1105) and lives in
+`indexer_state.start_ledger`, which is independent of the `last_ledger` cursor so moving it
+never rewinds progress. `NULL` means "not configured" and the `INDEXER_START_LEDGER` env var
+is used instead.
+
+- `GET /api/v1/admin/indexer/start-block` — reads the effective block, where it came from
+  (`source: "database" | "environment"`), the current cursor and `active` (false once the
+  cursor has moved, since the start block is only consulted while it is still `0`).
+- `PUT /api/v1/admin/indexer/start-block` — body `{ "startBlock": <ledger> }`, admin keys
+  only. A block ahead of the current cursor is rejected (it would skip the ledgers in
+  between) and the write is audit-logged. The value is picked up on the next `start()`, never
+  mid-run.
 
 ## Event dispatch: `processEvent`
 

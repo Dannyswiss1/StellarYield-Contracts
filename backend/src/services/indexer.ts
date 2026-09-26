@@ -202,8 +202,19 @@ export class Indexer {
     this.running = true;
 
     try {
+      const { startBlock } = await this.getStartLedgerConfig();
       this.lastLedger = await this.getLastIndexedLedger();
-      logger.info({ ledger: this.lastLedger }, `resuming from ledger ${this.lastLedger}`);
+      // A configured start block (#1105) is the origin of a fresh indexing run:
+      // while the cursor is still 0 no progress has been recorded, so the block
+      // is not being skipped over. Once the cursor advances the start block is
+      // ignored again, which is why the admin endpoint reports it as inactive.
+      if (this.lastLedger === 0 && startBlock > 0) {
+        this.lastLedger = startBlock;
+      }
+      logger.info(
+        { ledger: this.lastLedger, startBlock },
+        `resuming from ledger ${this.lastLedger}`,
+      );
 
       if (!this.vaultFactoryContractId) {
         logger.info("Indexer started in state-only mode (no contract ID configured)");
@@ -1627,6 +1638,33 @@ export class Indexer {
       `INSERT INTO indexer_state (id, last_ledger) VALUES (1, $1)
        ON CONFLICT (id) DO UPDATE SET last_ledger = EXCLUDED.last_ledger, updated_at = NOW()`,
       [ledger],
+    );
+  }
+
+  /**
+   * Configured start block (#1105): the ledger a fresh indexing run starts
+   * from. `indexer_state.start_ledger` wins when set, otherwise the
+   * INDEXER_START_LEDGER env var is the fallback (reported as
+   * `source: "environment"`). Deliberately separate from the
+   * `last_ledger` cursor so an operator can move the start block without
+   * rewinding progress.
+   */
+  async getStartLedgerConfig(): Promise<{ startBlock: number; source: "database" | "environment" }> {
+    const rows = await query<{ start_ledger: number | null }>(
+      "SELECT start_ledger FROM indexer_state WHERE id = 1",
+    );
+    const startLedger = rows[0]?.start_ledger;
+    if (startLedger === null || startLedger === undefined) {
+      return { startBlock: config.indexer.startLedger, source: "environment" };
+    }
+    return { startBlock: startLedger, source: "database" };
+  }
+
+  async saveStartLedgerConfig(startBlock: number): Promise<void> {
+    await query(
+      `INSERT INTO indexer_state (id, start_ledger, updated_at) VALUES (1, $1, NOW())
+       ON CONFLICT (id) DO UPDATE SET start_ledger = EXCLUDED.start_ledger, updated_at = NOW()`,
+      [startBlock],
     );
   }
 

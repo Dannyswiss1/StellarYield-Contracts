@@ -21,6 +21,7 @@ import { validateRouter } from "./api/routes/validate.js";
 import { utilsRouter } from "./api/routes/utils.js";
 import { codegenRouter } from "./api/routes/codegen.js";
 import { notificationsRouter } from "./api/routes/notifications.js";
+import { gdprRouter } from "./api/routes/gdpr.js";
 import { debugRoutesHandler } from "./api/routes/debugRoutes.js";
 import { analyticsRouter } from "./api/routes/analytics.js";
 import { platformStatsRouter, userVaultActivityRouter } from "./api/routes/platformStats.js";
@@ -141,6 +142,9 @@ export function createApp(): Express {
   app.use("/api/v1/factory", publicLimiter, factoryRouter);
   app.use("/api/v1/proxy", authLimiter, proxyRouter);
   app.use("/api/v1/admin/notifications", authLimiter, notificationsRouter);
+  // GDPR data subject rights (#1110 export, #1111 erasure) — admin keys only,
+  // so the router applies its own requireApiKey({ role: "admin" }).
+  app.use("/api/v1/gdpr", authLimiter, gdprRouter);
   // Feature flag admin endpoints — must be mounted before /api/v1/admin to
   // avoid the admin auth middleware consuming /api/v1/admin/feature-flags (#916)
   app.use("/api/v1/admin/feature-flags", authLimiter, featureFlagsRouter);
