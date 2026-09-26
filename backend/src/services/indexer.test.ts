@@ -309,6 +309,36 @@ describe("Indexer tick", () => {
     expect(calls.some((sql) => sql.includes("user_vault_positions"))).toBe(true);
   });
 
+  it("stamps first_entry_at and clears last_exit_at on a deposit (#1083)", async () => {
+    const { getSorobanRpc } = await import("./stellar.js");
+    const { Indexer } = await import("./indexer.js");
+    const { query } = await import("../db/index.js");
+
+    const depositEvent = {
+      id: "0000000002",
+      contractId: "CCONTRACT123",
+      type: "contract",
+      ledger: 101,
+      txHash: "def456",
+      topic: [nativeToScVal("deposit"), nativeToScVal(account), nativeToScVal(account)],
+      value: nativeToScVal([500n, 500n]),
+    };
+
+    (getSorobanRpc as any).mockReturnValue({
+      getLatestLedger: vi.fn().mockResolvedValue({ sequence: 101 }),
+      getEvents: vi.fn().mockResolvedValue({ events: [depositEvent], latestLedger: 101 }),
+    });
+    (query as any).mockResolvedValue([]);
+
+    await new Indexer().tick();
+
+    const upsert = (query as any).mock.calls
+      .map((c: any[]) => c[0] as string)
+      .find((sql: string) => sql.includes("INSERT INTO user_vault_positions"));
+    expect(upsert).toContain("first_entry_at = COALESCE(user_vault_positions.first_entry_at, NOW())");
+    expect(upsert).toContain("last_exit_at = NULL");
+  });
+
   it("logs a warning and does not crash when RPC throws", async () => {
     const { getSorobanRpc } = await import("./stellar.js");
     const { Indexer } = await import("./indexer.js");
