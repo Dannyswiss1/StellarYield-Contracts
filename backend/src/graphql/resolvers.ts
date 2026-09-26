@@ -24,6 +24,9 @@ function computeYieldPerShare(yieldAmount: string, totalShares: string): string 
   return `${padded.slice(0, -18)}.${padded.slice(-18)}`;
 }
 
+// Vault lifecycle states stored in vaults.state (#1117).
+const VAULT_STATES = ["Funding", "Active", "Matured", "Closed", "Cancelled"];
+
 export const root = {
   health: () => "ok",
   user: async ({ address }: { address: string }) => {
@@ -43,6 +46,35 @@ export const root = {
       totalShares: e.totalShares,
       yieldPerShare: computeYieldPerShare(e.yieldAmount, e.totalShares),
       distributedAt: e.distributedAt ? e.distributedAt.toISOString() : null,
+    }));
+  },
+  vaultsByStatus: async ({ status }: { status: string }) => {
+    const normalized = VAULT_STATES.find((s) => s.toLowerCase() === status.trim().toLowerCase());
+    if (!normalized) {
+      throw new GraphQLError(`Invalid status "${status}". Expected one of: ${VAULT_STATES.join(", ")}`, {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    const rows = await query<{
+      contract_id: string;
+      asset: string;
+      name: string | null;
+      symbol: string | null;
+      state: string;
+      total_assets: string | null;
+      total_supply: string | null;
+    }>(
+      "SELECT contract_id, asset, name, symbol, state, total_assets, total_supply FROM vaults WHERE state = $1 ORDER BY created_at DESC",
+      [normalized],
+    );
+    return rows.map((row) => ({
+      contractId: row.contract_id,
+      asset: row.asset,
+      name: row.name,
+      symbol: row.symbol,
+      state: row.state,
+      totalAssets: String(row.total_assets ?? "0"),
+      totalSupply: String(row.total_supply ?? "0"),
     }));
   },
   apiKeys: async (_args: unknown, context: GraphQLContext) => {
