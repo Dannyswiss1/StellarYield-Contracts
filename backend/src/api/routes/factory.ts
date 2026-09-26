@@ -5,6 +5,8 @@ import {
   getVaultCreationRate,
   getFactoryDefaults,
   getFactoryEvents,
+  getFactoryInfo,
+  getVaultCount,
 } from "../controllers/factory.js";
 import { validateQuery } from "../middleware/validate.js";
 import { requireApiKey } from "../middleware/auth.js";
@@ -24,3 +26,7 @@ factoryRouter.get("/vault-creation-rate", getVaultCreationRate);
 factoryRouter.get("/defaults", getFactoryDefaults);
 // Paginated, reverse-ledger-order factory event log (#842)
 factoryRouter.get("/events", requireApiKey(), validateQuery(factoryEventsQuerySchema), getFactoryEvents);
+// Factory contract metadata sourced from indexed event history (#835)
+factoryRouter.get("/info", requireApiKey({ minRole: "readonly" }), getFactoryInfo);
+// Lightweight vault totals by state, cacheable for dashboards (#836)
+factoryRouter.get("/vault-count", getVaultCount);

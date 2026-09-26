@@ -673,6 +673,27 @@ export class Indexer {
       return;
     }
 
+    const pauseReasonSet = parsePauseReasonSetEvent(event);
+    if (pauseReasonSet) {
+      await this.handlePauseReasonSet(event.contractId ?? "", pauseReasonSet);
+      await this.recordEvent(event, "pause_reason_set");
+      return;
+    }
+
+    const redemptionQueueUpdated = parseRedemptionQueueUpdatedEvent(event);
+    if (redemptionQueueUpdated) {
+      await this.handleRedemptionQueueUpdated(event.contractId ?? "", redemptionQueueUpdated);
+      await this.recordEvent(event, "redemption_queue_updated");
+      return;
+    }
+
+    const minimumDepositUpdated = parseMinimumDepositUpdatedEvent(event);
+    if (minimumDepositUpdated) {
+      await this.handleMinimumDepositUpdated(event.contractId ?? "", minimumDepositUpdated);
+      await this.recordEvent(event, "minimum_deposit_updated");
+      return;
+    }
+
     const zkmeUpd = parseZkmeVerifierUpdatedEvent(event);
     if (zkmeUpd) {
       await this.handleZkmeVerifierUpdated(event.contractId ?? "", zkmeUpd);
@@ -696,6 +717,17 @@ export class Indexer {
         asset: defaultsUpdated.asset,
         zkmeVerifier: defaultsUpdated.zkmeVerifier,
         cooperator: defaultsUpdated.cooperator,
+      });
+      return;
+    }
+
+    const wasmHashUpdated = parseWasmHashUpdatedEvent(event);
+    if (wasmHashUpdated) {
+      await this.handleWasmHashUpdated(event.ledger ?? 0, wasmHashUpdated);
+      await this.recordEvent(event, "wasm_upd", {
+        oldHash: wasmHashUpdated.oldHash,
+        newHash: wasmHashUpdated.newHash,
+        updatedBy: wasmHashUpdated.updatedBy,
       });
       return;
     }
@@ -896,13 +928,15 @@ export class Indexer {
     deposit: { caller: string; receiver: string; assets: bigint; shares: bigint },
   ): Promise<void> {
     await query(
-      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited, updated_at)
-       SELECT $1, v.id, $2, $3, NOW()
+      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited, updated_at, first_entry_at)
+       SELECT $1, v.id, $2, $3, NOW(), NOW()
        FROM vaults v WHERE v.contract_id = $4
        ON CONFLICT (user_address, vault_id)
        DO UPDATE SET
          shares    = user_vault_positions.shares    + EXCLUDED.shares,
          deposited = user_vault_positions.deposited + EXCLUDED.deposited,
+         first_entry_at = COALESCE(user_vault_positions.first_entry_at, NOW()),
+         last_exit_at = NULL,
          updated_at = NOW()`,
       [deposit.receiver, deposit.shares.toString(), deposit.assets.toString(), contractId],
     );
@@ -958,12 +992,13 @@ export class Indexer {
     withdraw: { owner: string; assets: bigint; shares: bigint },
   ): Promise<void> {
     await query(
-      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited)
-       SELECT $1, v.id, 0, 0
+      `INSERT INTO user_vault_positions (user_address, vault_id, shares, deposited, last_exit_at)
+       SELECT $1, v.id, 0, 0, NOW()
        FROM vaults v WHERE v.contract_id = $4
        ON CONFLICT (user_address, vault_id) DO UPDATE SET
          shares    = GREATEST(0, user_vault_positions.shares    - $2),
          deposited = GREATEST(0, user_vault_positions.deposited - $3),
+         last_exit_at = CASE WHEN GREATEST(0, user_vault_positions.shares - $2) = 0 THEN NOW() ELSE NULL END,
          updated_at = NOW()`,
       [withdraw.owner, withdraw.shares.toString(), withdraw.assets.toString(), contractId],
     );
@@ -1446,6 +1481,67 @@ export class Indexer {
     );
   }
 
+  // ── #1098: handlePauseReasonSet ──────────────────────────────────────────────
+
+  private async handlePauseReasonSet(
+    contractId: string,
+    ev: { caller: string; reason: string },
+  ): Promise<void> {
+    await query(
+      `UPDATE vaults SET pause_reason = $1, updated_at = NOW() WHERE contract_id = $2`,
+      [ev.reason || null, contractId],
+    );
+    await cacheDel(`vault:${contractId}`);
+    logger.info(
+      { contractId, reason: ev.reason },
+      "Processed pause_reason_set event",
+    );
+  }
+
+  // ── #1097: handleRedemptionQueueUpdated ──────────────────────────────────────
+
+  private async handleRedemptionQueueUpdated(
+    contractId: string,
+    ev: { address: string; amount: bigint; position: number; status: string },
+  ): Promise<void> {
+    await query(
+      `INSERT INTO redemption_queue (contract_id, address, amount, position, status, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (contract_id, address) DO UPDATE SET
+         amount = EXCLUDED.amount,
+         position = EXCLUDED.position,
+         status = EXCLUDED.status,
+         updated_at = NOW()`,
+      [contractId, ev.address, ev.amount.toString(), ev.position, ev.status],
+    );
+    logger.info(
+      { contractId, address: ev.address, position: ev.position, status: ev.status },
+      "Processed redemption_queue_updated event",
+    );
+  }
+
+  // ── #1096: handleMinimumDepositUpdated ──────────────────────────────────────
+
+  private async handleMinimumDepositUpdated(
+    contractId: string,
+    ev: { caller: string; oldMinimum: bigint; newMinimum: bigint },
+  ): Promise<void> {
+    await query(
+      `UPDATE vaults SET minimum_deposit = $1, updated_at = NOW() WHERE contract_id = $2`,
+      [ev.newMinimum.toString(), contractId],
+    );
+    await query(
+      `INSERT INTO minimum_deposit_history (contract_id, old_minimum, new_minimum, changed_by, recorded_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [contractId, ev.oldMinimum.toString(), ev.newMinimum.toString(), ev.caller],
+    );
+    await cacheDel(`vault:${contractId}`);
+    logger.info(
+      { contractId, oldMinimum: ev.oldMinimum.toString(), newMinimum: ev.newMinimum.toString() },
+      "Processed minimum_deposit_updated event",
+    );
+  }
+
   private async handleZkmeVerifierUpdated(
     contractId: string,
     ev: { newVerifier: string },
@@ -1468,6 +1564,21 @@ export class Indexer {
       [ev.oldAdmin, ev.newAdmin, ledger],
     );
     logger.info({ oldAdmin: ev.oldAdmin, newAdmin: ev.newAdmin, ledger }, "Processed adm_xfr event");
+  }
+
+  private async handleWasmHashUpdated(
+    ledger: number,
+    ev: { oldHash: string; newHash: string; updatedBy: string },
+  ): Promise<void> {
+    await query(
+      `INSERT INTO factory_wasm_history (old_hash, new_hash, updated_by, ledger, recorded_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [ev.oldHash, ev.newHash, ev.updatedBy, ledger],
+    );
+    logger.info(
+      { oldHash: ev.oldHash, newHash: ev.newHash, updatedBy: ev.updatedBy, ledger },
+      "Processed wasm_upd event",
+    );
   }
 
   private async handleKycSet(
@@ -2480,6 +2591,79 @@ export function parseDefaultsUpdatedEvent(rawEvent: unknown): ParsedDefaultsUpda
   }
 }
 
+// ── Issue #837: parseWasmHashUpdatedEvent ─────────────────────────────────────
+
+export interface ParsedWasmHashUpdatedEvent {
+  oldHash: string;
+  newHash: string;
+  updatedBy: string;
+}
+
+/**
+ * Parse the factory's `wasm_upd` event: topics are
+ * `(symbol!("wasm_upd"), updated_by)` and the value is `(old_hash, new_hash)`.
+ */
+export function parseWasmHashUpdatedEvent(rawEvent: unknown): ParsedWasmHashUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 1 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "wasm_upd" && eventName !== "wasm_hash_updated") return null;
+
+    let updatedBy = "";
+    if (topics.length > 1) {
+      try {
+        updatedBy = String(scValToNative(parsedTopics[1]) ?? "");
+      } catch {
+        updatedBy = "";
+      }
+    }
+
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+    const oldHash = normalizeHash(arr[0]);
+    const newHash = normalizeHash(arr[1]);
+
+    if (!newHash) return null;
+
+    return { oldHash, newHash, updatedBy };
+  } catch {
+    return null;
+  }
+}
+
+/** Render a hash ScVal as a lowercase hex string, tolerating Buffer/bytes input. */
+function normalizeHash(value: unknown): string {
+  if (value == null) return "";
+  if (Buffer.isBuffer(value)) return value.toString("hex");
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("hex");
+  if (Array.isArray(value)) {
+    try {
+      return Buffer.from(value as number[]).toString("hex");
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
 // ── Issue #594: role events ─────────────────────────────────────────────────
 
 export interface ParsedRoleGrantedEvent {
@@ -2834,6 +3018,139 @@ export function parseFeeRateChangedEvent(rawEvent: unknown): ParsedFeeRateChange
     if (oldFeeBps !== null && !valid(oldFeeBps)) return null;
 
     return { feeBps, oldFeeBps };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1098: parsePauseReasonSetEvent ──────────────────────────────────────────
+
+export interface ParsedPauseReasonSetEvent {
+  caller: string;
+  reason: string;
+}
+
+export function parsePauseReasonSetEvent(rawEvent: unknown): ParsedPauseReasonSetEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "pause_reason_set") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const reason = String(Array.isArray(data) ? data[0] ?? "" : data ?? "");
+
+    return { caller, reason };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1097: parseRedemptionQueueUpdatedEvent ──────────────────────────────────
+
+export interface ParsedRedemptionQueueUpdatedEvent {
+  address: string;
+  amount: bigint;
+  position: number;
+  status: string;
+}
+
+export function parseRedemptionQueueUpdatedEvent(rawEvent: unknown): ParsedRedemptionQueueUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 1 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "redemption_queue_updated") return null;
+
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+
+    const address = String(arr[0] ?? "");
+    const amount = decodeBigInt(arr[1]);
+    const position = Number(decodeBigInt(arr[2]));
+    const status = String(arr[3] ?? "pending");
+
+    return { address, amount, position, status };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1096: parseMinimumDepositUpdatedEvent ──────────────────────────────────
+
+export interface ParsedMinimumDepositUpdatedEvent {
+  caller: string;
+  oldMinimum: bigint;
+  newMinimum: bigint;
+}
+
+export function parseMinimumDepositUpdatedEvent(rawEvent: unknown): ParsedMinimumDepositUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "minimum_deposit_updated") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+
+    const oldMinimum = decodeBigInt(arr[0]);
+    const newMinimum = decodeBigInt(arr[1]);
+
+    return { caller, oldMinimum, newMinimum };
   } catch {
     return null;
   }

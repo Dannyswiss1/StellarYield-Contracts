@@ -369,6 +369,23 @@ export function makeDefaultsUpdatedEvent(
   };
 }
 
+export function makeWasmHashUpdatedEvent(
+  overrides: Partial<BaseOverrides & {
+    oldHash: string;
+    newHash: string;
+    updatedBy: string;
+  }> = {},
+) {
+  const oldHash = overrides.oldHash ?? "a".repeat(64);
+  const newHash = overrides.newHash ?? "b".repeat(64);
+  const updatedBy = overrides.updatedBy ?? USER_ADDRESS;
+  return {
+    ...baseEvent(overrides),
+    topic: [nativeToScVal("wasm_upd"), nativeToScVal(updatedBy)],
+    value: nativeToScVal([Buffer.from(oldHash, "hex"), Buffer.from(newHash, "hex")]),
+  };
+}
+
 export function makeKycSetEvent(
   overrides: Partial<BaseOverrides & {
     user: string;
