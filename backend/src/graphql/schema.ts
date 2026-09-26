@@ -15,6 +15,16 @@ export const schema = buildSchema(`
     distributedAt: String
   }
 
+  type Vault {
+    contractId: String!
+    asset: String!
+    name: String
+    symbol: String
+    state: String!
+    totalAssets: String!
+    totalSupply: String!
+  }
+
   type ApiKey {
     id: ID!
     label: String
@@ -27,5 +37,6 @@ export const schema = buildSchema(`
     user(address: String!): User
     epochs(contractId: String!): [Epoch!]!
     apiKeys: [ApiKey!]!
+    vaultsByStatus(status: String!): [Vault!]!
   }
 `);
