@@ -209,3 +209,34 @@ export interface PortfolioDiversification {
   categoryCount: number;
   herfindahlIndex: number;
 }
+
+export interface PortfolioValuePosition {
+  contractId: string;
+  shares: string;
+  valueUsd: string;
+  shareOfVault: number;
+}
+
+export interface PortfolioValueResponse {
+  address: string;
+  totalValueUsd: string;
+  positions: PortfolioValuePosition[];
+}
+
+export interface PortfolioHistoryEntry {
+  date: string;
+  totalValueUsd: string;
+}
+
+export interface FirstDepositResponse {
+  address: string;
+  firstDepositAt: Date;
+  contractId: string;
+}
+
+export interface RealizedYieldEntry {
+  contractId: string;
+  epochId: number;
+  yieldClaimed: string;
+  claimedAt: Date;
+}
