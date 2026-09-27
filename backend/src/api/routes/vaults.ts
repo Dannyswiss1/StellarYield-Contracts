@@ -34,6 +34,8 @@ import {
   getSimilarVaults,
   getFeeHistory,
   getVaultFees,
+  getVaultTransferFees,
+  getVaultTransferLeaderboard,
   getCooperatorFees,
   streamVaultEvents,
   getVaultsBulkStatus,
@@ -325,3 +327,8 @@ vaultsRouter.get("/:contractId/report", validateParams(vaultParamsSchema), getVa
 vaultsRouter.get("/:contractId/epochs/:epoch/breakdown", validateParams(vaultParamsSchema), getEpochBreakdown);
 // Similar vaults by category and TVL proximity: GET /api/v1/vaults/:contractId/similar
 vaultsRouter.get("/:contractId/similar", validateParams(vaultParamsSchema), getSimilarVaults);
+// Transfer fees query: GET /api/v1/vaults/:contractId/transfer-fees?from=&to= (#1076)
+vaultsRouter.get("/:contractId/transfer-fees", validateParams(vaultParamsSchema), getVaultTransferFees);
+// Transfer leaderboard: GET /api/v1/vaults/:contractId/transfer-leaderboard?limit=10 (#1075)
+vaultsRouter.get("/:contractId/transfer-leaderboard", validateParams(vaultParamsSchema), getVaultTransferLeaderboard);
+

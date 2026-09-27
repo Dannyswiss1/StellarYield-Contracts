@@ -1009,6 +1009,30 @@ export class Indexer {
       return true;
     }
 
+    // ── #1077 / #1113: transfer ───────────────────────────────────────────────
+    const transfer = parseTransferEvent(event);
+    if (transfer) {
+      await this.handleTransfer(event.contractId ?? "", transfer, event);
+      await this.recordEvent(event, "transfer", {
+        from: transfer.from,
+        to: transfer.to,
+        amount: transfer.amount.toString(),
+      });
+      return true;
+    }
+
+    // ── #1076: transfer_fee_collected ────────────────────────────────────────
+    const transferFee = parseTransferFeeCollectedEvent(event);
+    if (transferFee) {
+      await this.handleTransferFeeCollected(event.contractId ?? transferFee.contractId ?? "", transferFee, event);
+      await this.recordEvent(event, "transfer_fee_collected", {
+        from: transferFee.from,
+        to: transferFee.to,
+        feeAmount: transferFee.feeAmount.toString(),
+      });
+      return true;
+    }
+
     return false;
   }
 
@@ -1815,6 +1839,91 @@ export class Indexer {
   ): Promise<void> {
     await this.userService.upsertUser(ev.user, ev.verified);
     logger.info({ contractId, user: ev.user, verified: ev.verified }, "Processed kyc_set event");
+  }
+
+  private async handleTransfer(
+    contractId: string,
+    transfer: ParsedTransferEvent,
+    event: any,
+  ): Promise<void> {
+    let vaultId: number | null = null;
+    try {
+      const vaultRows = await query<{ id: number }>(
+        "SELECT id FROM vaults WHERE contract_id = $1",
+        [contractId],
+      );
+      if (vaultRows.length > 0) {
+        vaultId = vaultRows[0].id;
+      }
+    } catch (err) {
+      logger.warn({ err, contractId }, "Failed to find vault for transfer");
+    }
+
+    const txHash = event.id ?? event.txHash ?? null;
+    const ledger = typeof event.ledger === "number" ? event.ledger : null;
+    const amountStr = transfer.amount.toString();
+
+    // 1. Insert into transfers table
+    await query(
+      `INSERT INTO transfers (vault_id, from_address, to_address, amount, tx_hash, ledger, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [vaultId, transfer.from, transfer.to, amountStr, txHash, ledger],
+    );
+
+    // 2. Issue #1077: Check LARGE_TRANSFER_THRESHOLD
+    try {
+      const largeThreshold = BigInt(config.largeTransferThreshold);
+      if (transfer.amount > largeThreshold) {
+        logger.warn(
+          {
+            contractId,
+            vaultId,
+            from: transfer.from,
+            to: transfer.to,
+            amount: amountStr,
+            threshold: largeThreshold.toString(),
+          },
+          "Large transfer alert: transfer amount exceeds threshold",
+        );
+
+        await query(
+          `INSERT INTO transfer_alerts (vault_id, contract_id, type, amount, from_address, to_address, tx_hash, details, created_at)
+           VALUES ($1, $2, 'LARGE_TRANSFER', $3, $4, $5, $6, $7, NOW())`,
+          [
+            vaultId,
+            contractId,
+            amountStr,
+            transfer.from,
+            transfer.to,
+            txHash,
+            JSON.stringify({
+              threshold: largeThreshold.toString(),
+              amount: amountStr,
+              from: transfer.from,
+              to: transfer.to,
+            }),
+          ],
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, contractId }, "Failed to process large transfer check");
+    }
+  }
+
+  private async handleTransferFeeCollected(
+    contractId: string,
+    feeEvent: ParsedTransferFeeCollectedEvent,
+    event: any,
+  ): Promise<void> {
+    const txHash = event.id ?? event.txHash ?? null;
+    const ledger = typeof event.ledger === "number" ? event.ledger : null;
+    const feeAmountStr = feeEvent.feeAmount.toString();
+
+    await query(
+      `INSERT INTO transfer_fees (contract_id, from_address, to_address, fee_amount, tx_hash, ledger, fee_type, created_at, collected_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'transfer_fee', NOW(), NOW())`,
+      [contractId, feeEvent.from, feeEvent.to, feeAmountStr, txHash, ledger],
+    );
   }
 
   private async recordEvent(
@@ -3559,4 +3668,120 @@ export function parseWhitelistUpdatedEvent(rawEvent: unknown): ParsedWhitelistUp
     return null;
   }
 }
+
+export interface ParsedTransferEvent {
+  from: string;
+  to: string;
+  amount: bigint;
+}
+
+export function parseTransferEvent(rawEvent: unknown): ParsedTransferEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 3 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "transfer") return null;
+
+    const from = String(scValToNative(parsedTopics[1]) ?? "");
+    const to = String(scValToNative(parsedTopics[2]) ?? "");
+    if (!from || !to) return null;
+
+    const data = parsedValue instanceof xdr.ScVal ? scValToNative(parsedValue) : parsedValue;
+    const amount = decodeBigInt(data);
+
+    return { from, to, amount };
+  } catch {
+    return null;
+  }
+}
+
+export interface ParsedTransferFeeCollectedEvent {
+  from: string;
+  to: string;
+  feeAmount: bigint;
+  contractId?: string;
+}
+
+export function parseTransferFeeCollectedEvent(rawEvent: unknown): ParsedTransferFeeCollectedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 1 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "transfer_fee_collected" && eventName !== "xfr_fee" && eventName !== "transfer_fee") {
+      return null;
+    }
+
+    let from = "";
+    let to = "";
+    let feeAmount = 0n;
+
+    if (parsedTopics.length >= 3) {
+      from = String(scValToNative(parsedTopics[1]) ?? "");
+      to = String(scValToNative(parsedTopics[2]) ?? "");
+      const data = parsedValue instanceof xdr.ScVal ? scValToNative(parsedValue) : parsedValue;
+      feeAmount = decodeBigInt(data);
+    } else {
+      const data = parsedValue instanceof xdr.ScVal ? scValToNative(parsedValue) : parsedValue;
+      if (Array.isArray(data)) {
+        if (data.length >= 3) {
+          from = String(data[0] ?? "");
+          to = String(data[1] ?? "");
+          feeAmount = decodeBigInt(data[2]);
+        } else if (data.length === 1) {
+          feeAmount = decodeBigInt(data[0]);
+        }
+      } else if (data && typeof data === "object") {
+        from = String((data as any).from ?? (data as any).from_address ?? (data as any).fromAddress ?? "");
+        to = String((data as any).to ?? (data as any).to_address ?? (data as any).toAddress ?? "");
+        feeAmount = decodeBigInt((data as any).feeAmount ?? (data as any).fee_amount ?? (data as any).amount ?? (data as any).fee ?? 0);
+      } else {
+        feeAmount = decodeBigInt(data);
+      }
+    }
+
+    return {
+      from,
+      to,
+      feeAmount,
+      contractId: typeof ev["contractId"] === "string" ? ev["contractId"] : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 
