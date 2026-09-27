@@ -400,6 +400,11 @@ export async function pauseContractIndexing(req: Request, res: Response, next: N
     await logAdminAudit(req, "pause_contract_indexing", `/api/v1/admin/indexer/${contractId}/pause`);
 
     res.json(formatIndexerContractState(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── Issue #1105: indexer start-block configuration ────────────────────────────
 
 /**
