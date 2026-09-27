@@ -51,7 +51,7 @@ function initStaticCache(): void {
 }
 
 initStaticCache();
-import { httpRequestsTotal, getMetrics } from "./services/metrics.js";
+import { httpRequestsTotal, getMetrics, recordHttp5xx } from "./services/metrics.js";
 import { setupOpenApiRoutes } from "./services/openapi.js";
 import { schema } from "./graphql/schema.js";
 import { apolloMiddleware } from "./graphql/apolloServer.js";
@@ -117,6 +117,10 @@ export function createApp(): Express {
     res.on("finish", () => {
       const route = req.route?.path ?? req.path;
       httpRequestsTotal.inc({ method: req.method, route, status: res.statusCode });
+      // 5xx error-rate counter (#1091). The `finish` hook is the single place
+      // every completed response passes through, so it sees 5xx replies written
+      // by the error handler as well as by controllers and middleware.
+      recordHttp5xx(req.method, route, res.statusCode, req.route !== undefined);
     });
     next();
   });

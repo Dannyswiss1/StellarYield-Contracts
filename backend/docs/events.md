@@ -33,6 +33,7 @@ notifications fire. Topic values are the `symbol` in `topics[0]` the parser matc
 | `doc_upd` / `vault_document_uri_updated` | `parseVaultDocumentUriUpdatedEvent` | Updates `vaults.rwa_document_uri`, inserts a `vault_metadata_history` row (`field = 'rwa_document_uri'`), invalidates caches | none |
 | `desc_upd` / `vault_description_updated` | `parseVaultDescriptionUpdatedEvent` | Updates `vaults.description`, invalidates caches | none |
 | `logo_upd` / `vault_logo_uri_updated` | `parseVaultLogoUriUpdatedEvent` | Updates `vaults.logo_uri`, invalidates caches | none | none |
+| `whitelist_updated` | `parseWhitelistUpdatedEvent` | Inserts a `whitelist_events` row (`action` = `added`/`removed`), served by `GET /api/v1/vaults/:contractId/whitelist-history` | none | none |
 
 ## Parsers not wired into `processEvent`
 

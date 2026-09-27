@@ -22,6 +22,62 @@ export const httpErrorsTotal = new client.Counter({
   registers: [register],
 });
 
+// 5xx-only companion to http_errors_total (#1091). Alerting on elevated 5xx
+// rates is a single PromQL expression against this counter, without having to
+// filter http_errors_total by statusClass. `method` and `route` are the only
+// labels, bounding cardinality to the number of registered routes.
+export const http5xxTotal = new client.Counter({
+  name: "http_5xx_total",
+  help: "Total number of HTTP responses with a 5xx status, by method and route",
+  labelNames: ["method", "route"] as const,
+  registers: [register],
+});
+
+// Number of SSE connections currently held open (#1092). Each stream pins a
+// socket and a file descriptor plus the response buffer, so a rising gauge is
+// the early signal that a deploy is running into memory or fd limits.
+export const sseActiveConnections = new client.Gauge({
+  name: "sse_active_connections",
+  help: "Number of currently open Server-Sent Events connections",
+  registers: [register],
+});
+
+// pg-boss queue depth (#1093). Gauges rather than counters because a job moving
+// from `created` to `active` to `failed` does not accumulate: the interesting
+// signal is the current number of jobs sitting in each state, sampled by
+// JobQueueDepthPoller (services/jobQueueDepthPoller.ts).
+export const pgbossJobsCreated = new client.Gauge({
+  name: "pgboss_jobs_created",
+  help: "Number of pg-boss jobs currently in the 'created' state",
+  registers: [register],
+});
+
+export const pgbossJobsActive = new client.Gauge({
+  name: "pgboss_jobs_active",
+  help: "Number of pg-boss jobs currently in the 'active' state",
+  registers: [register],
+});
+
+export const pgbossJobsFailed = new client.Gauge({
+  name: "pgboss_jobs_failed",
+  help: "Number of pg-boss jobs currently in the 'failed' state",
+  registers: [register],
+});
+
+// Prime the gauges so they are exposed by /metrics with a value of 0 from the
+// first scrape, before any SSE stream is opened or the queue poller completes
+// its first pass. Alerting rules like `pgboss_jobs_failed > 0` must not depend
+// on warm-up ordering.
+sseActiveConnections.set(0);
+pgbossJobsCreated.set(0);
+pgbossJobsActive.set(0);
+pgbossJobsFailed.set(0);
+
+// Backing count for sse_active_connections. Kept in module scope because the
+// prom-client Gauge API only exposes its value asynchronously, and the decrement
+// path needs the current count synchronously in order to clamp it at zero.
+let sseConnections = 0;
+
 export const indexerEventsProcessedTotal = new client.Counter({
   name: "indexer_events_processed_total",
   help: "Total number of on-chain events processed by the indexer",
@@ -85,6 +141,92 @@ export async function updateJobQueuePendingMetrics(): Promise<void> {
 export async function getMetrics(): Promise<string> {
   await updateJobQueuePendingMetrics();
   return register.metrics();
+}
+
+/**
+ * Record a finished HTTP response on the 5xx counter (#1091).
+ *
+ * A status of 500 or above increments `http_5xx_total`. Any other status for a
+ * route Express actually matched initialises the series at 0, so a healthy
+ * route is reported as 0 instead of being absent from the scrape. Unmatched
+ * paths (404s and anything else that falls through to `notFoundHandler`) are
+ * skipped: their raw path would create an unbounded number of series.
+ *
+ * Never throws: a metrics failure must not be able to fail the response.
+ */
+export function recordHttp5xx(
+  method: string | undefined,
+  route: string | undefined,
+  statusCode: number,
+  matched = true,
+): void {
+  if (!Number.isFinite(statusCode)) return;
+
+  const labels = { method: method || "unknown", route: route || "unknown" };
+  try {
+    if (statusCode >= 500) {
+      http5xxTotal.inc(labels);
+    } else if (matched) {
+      http5xxTotal.inc(labels, 0);
+    }
+  } catch {
+    // Ignore: never let a metrics failure affect the response
+  }
+}
+
+/**
+ * Increment `sse_active_connections` when a stream is opened (#1092).
+ */
+export function incrementSseConnections(): void {
+  try {
+    sseConnections += 1;
+    sseActiveConnections.set(sseConnections);
+  } catch {
+    // Ignore: never let a metrics failure break the connection handshake
+  }
+}
+
+/**
+ * Decrement `sse_active_connections` when a stream closes (#1092).
+ *
+ * Clamped at 0: a `close` event can fire more than once for the same connection
+ * (request and response both emit one), and a negative connection count would
+ * be nonsense to alert on.
+ */
+export function decrementSseConnections(): void {
+  try {
+    sseConnections = Math.max(0, sseConnections - 1);
+    sseActiveConnections.set(sseConnections);
+  } catch {
+    // Ignore: never let a metrics failure break connection teardown
+  }
+}
+
+/**
+ * Reset `sse_active_connections` to 0. Used when in-process connection state is
+ * dropped wholesale (tests, and any future forced-disconnect sweep) so the
+ * gauge cannot drift away from the number of streams actually held.
+ */
+export function resetSseConnections(): void {
+  sseConnections = 0;
+  sseActiveConnections.set(0);
+}
+
+export interface JobQueueDepth {
+  created: number;
+  active: number;
+  failed: number;
+}
+
+/**
+ * Publish a pg-boss queue depth sample (#1093). All three states are set on
+ * every sample so a queue that drains back to empty reports 0 again rather than
+ * keeping the last non-zero value.
+ */
+export function setJobQueueDepth(depth: JobQueueDepth): void {
+  pgbossJobsCreated.set(depth.created);
+  pgbossJobsActive.set(depth.active);
+  pgbossJobsFailed.set(depth.failed);
 }
 
 /**
