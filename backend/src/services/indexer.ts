@@ -988,9 +988,6 @@ export class Indexer {
         newName: vaultNameUpdated.newName,
       });
       return true;
-    }
-    return false;
-
     // ── #1094: whitelist_updated ──────────────────────────────────────────────
     const whitelistUpdated = parseWhitelistUpdatedEvent(event);
     if (whitelistUpdated) {
@@ -1007,8 +1004,10 @@ export class Indexer {
         action: whitelistUpdated.action,
         caller: whitelistUpdated.caller,
       });
-      return;
+      return true;
     }
+
+    return false;
   }
 
   private async handleMetadataUpdated(

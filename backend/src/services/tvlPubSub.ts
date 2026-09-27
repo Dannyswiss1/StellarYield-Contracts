@@ -15,6 +15,7 @@ export class TvlPubSub extends EventEmitter {
   }
 
   asyncIterator(contractId?: string): AsyncIterableIterator<VaultTvlUpdatePayload> {
+    const emitter = this;
     const eventName = contractId ? `vaultTvlUpdated:${contractId}` : "vaultTvlUpdated";
     const queue: VaultTvlUpdatePayload[] = [];
     let notify: (() => void) | null = null;
@@ -28,7 +29,7 @@ export class TvlPubSub extends EventEmitter {
       }
     };
 
-    this.on(eventName, listener);
+    emitter.on(eventName, listener);
 
     return {
       [Symbol.asyncIterator]() {
@@ -47,7 +48,7 @@ export class TvlPubSub extends EventEmitter {
       },
       async return(): Promise<IteratorResult<VaultTvlUpdatePayload>> {
         listening = false;
-        this.off(eventName, listener);
+        emitter.off(eventName, listener);
         if (notify) {
           notify();
           notify = null;
@@ -56,7 +57,7 @@ export class TvlPubSub extends EventEmitter {
       },
       async throw(err?: any): Promise<IteratorResult<VaultTvlUpdatePayload>> {
         listening = false;
-        this.off(eventName, listener);
+        emitter.off(eventName, listener);
         if (notify) {
           notify();
           notify = null;
