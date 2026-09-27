@@ -57,9 +57,8 @@ describeIfBackend("SDK backend-client integration (live backend) #874", () => {
 
   it('client.GET("/api/v1/health") returns { status: "ok" }', async () => {
     const client = createBackendClient(BACKEND_URL as string);
-    const { data, error } = await client.GET<{ status: string; version: string }>(
-      "/api/v1/health",
-    );
+    // No type argument needed: the response type is inferred from the spec.
+    const { data, error } = await client.GET("/api/v1/health");
 
     expect(error).toBeUndefined();
     expect(data).toBeDefined();
@@ -68,19 +67,14 @@ describeIfBackend("SDK backend-client integration (live backend) #874", () => {
 
   it('client.GET("/api/v1/vaults") returns a vault list parseable by VaultSchema', async () => {
     const client = createBackendClient(BACKEND_URL as string);
-    const { data, error } = await client.GET<{
-      data: unknown[];
-      total: number;
-      page: number;
-      pageSize: number;
-    }>("/api/v1/vaults");
+    const { data, error } = await client.GET("/api/v1/vaults");
 
     expect(error).toBeUndefined();
     expect(data).toBeDefined();
-    expect(Array.isArray((data as { data: unknown[] }).data)).toBe(true);
+    expect(Array.isArray(data?.data)).toBe(true);
 
-    const vaults = (data as { data: unknown[] }).data;
-    for (const vault of vaults) {
+    // `data` is already typed from the spec, so no cast is needed to read it.
+    for (const vault of data?.data ?? []) {
       expect(() => VaultSchema.parse(vault)).not.toThrow();
     }
   });
