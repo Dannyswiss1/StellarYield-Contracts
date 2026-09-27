@@ -253,8 +253,19 @@ export class Indexer {
     this.running = true;
 
     try {
+      const { startBlock } = await this.getStartLedgerConfig();
       this.lastLedger = await this.getLastIndexedLedger();
-      logger.info({ ledger: this.lastLedger }, `resuming from ledger ${this.lastLedger}`);
+      // A configured start block (#1105) is the origin of a fresh indexing run:
+      // while the cursor is still 0 no progress has been recorded, so the block
+      // is not being skipped over. Once the cursor advances the start block is
+      // ignored again, which is why the admin endpoint reports it as inactive.
+      if (this.lastLedger === 0 && startBlock > 0) {
+        this.lastLedger = startBlock;
+      }
+      logger.info(
+        { ledger: this.lastLedger, startBlock },
+        `resuming from ledger ${this.lastLedger}`,
+      );
 
       if (!this.vaultFactoryContractId) {
         logger.info("Indexer started in state-only mode (no contract ID configured)");
@@ -978,6 +989,25 @@ export class Indexer {
       return true;
     }
     return false;
+
+    // ── #1094: whitelist_updated ──────────────────────────────────────────────
+    const whitelistUpdated = parseWhitelistUpdatedEvent(event);
+    if (whitelistUpdated) {
+      // The transaction hash is what an auditor follows, so it is preferred over
+      // the event id that the rest of the indexer falls back to.
+      await this.handleWhitelistUpdated(
+        event.contractId ?? "",
+        whitelistUpdated,
+        event.txHash ?? event.id ?? "",
+        event.ledger ?? 0,
+      );
+      await this.recordEvent(event, "whitelist_updated", {
+        address: whitelistUpdated.address,
+        action: whitelistUpdated.action,
+        caller: whitelistUpdated.caller,
+      });
+      return;
+    }
   }
 
   private async handleMetadataUpdated(
@@ -1709,6 +1739,35 @@ export class Indexer {
     );
   }
 
+  // ── #1094: handleWhitelistUpdated ───────────────────────────────────────────
+
+  private async handleWhitelistUpdated(
+    contractId: string,
+    ev: { address: string; action: WhitelistAction; caller: string },
+    txHash: string,
+    ledger: number,
+  ): Promise<void> {
+    // Whitelist changes are only auditable against a known contract, so an
+    // event without one is dropped rather than stored unattributably.
+    if (!contractId) {
+      logger.warn({ txHash, ledger }, "Dropped whitelist_updated event with no contract id");
+      return;
+    }
+
+    // ON CONFLICT guards against a backfill re-reading a ledger range that was
+    // already indexed — each on-chain change must produce exactly one row.
+    await query(
+      `INSERT INTO whitelist_events (contract_id, address, action, tx_hash, ledger)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (contract_id, tx_hash, ledger, address, action) DO NOTHING`,
+      [contractId, ev.address, ev.action, txHash, ledger],
+    );
+    logger.info(
+      { contractId, address: ev.address, action: ev.action, caller: ev.caller, ledger },
+      "Processed whitelist_updated event",
+    );
+  }
+
   private async handleZkmeVerifierUpdated(
     contractId: string,
     ev: { newVerifier: string },
@@ -1793,6 +1852,33 @@ export class Indexer {
       `INSERT INTO indexer_state (id, last_ledger) VALUES (1, $1)
        ON CONFLICT (id) DO UPDATE SET last_ledger = EXCLUDED.last_ledger, updated_at = NOW()`,
       [ledger],
+    );
+  }
+
+  /**
+   * Configured start block (#1105): the ledger a fresh indexing run starts
+   * from. `indexer_state.start_ledger` wins when set, otherwise the
+   * INDEXER_START_LEDGER env var is the fallback (reported as
+   * `source: "environment"`). Deliberately separate from the
+   * `last_ledger` cursor so an operator can move the start block without
+   * rewinding progress.
+   */
+  async getStartLedgerConfig(): Promise<{ startBlock: number; source: "database" | "environment" }> {
+    const rows = await query<{ start_ledger: number | null }>(
+      "SELECT start_ledger FROM indexer_state WHERE id = 1",
+    );
+    const startLedger = rows[0]?.start_ledger;
+    if (startLedger === null || startLedger === undefined) {
+      return { startBlock: config.indexer.startLedger, source: "environment" };
+    }
+    return { startBlock: startLedger, source: "database" };
+  }
+
+  async saveStartLedgerConfig(startBlock: number): Promise<void> {
+    await query(
+      `INSERT INTO indexer_state (id, start_ledger, updated_at) VALUES (1, $1, NOW())
+       ON CONFLICT (id) DO UPDATE SET start_ledger = EXCLUDED.start_ledger, updated_at = NOW()`,
+      [startBlock],
     );
   }
 
@@ -3317,6 +3403,101 @@ export function parseMinimumDepositUpdatedEvent(rawEvent: unknown): ParsedMinimu
     const newMinimum = decodeBigInt(arr[1]);
 
     return { caller, oldMinimum, newMinimum };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1094: parseWhitelistUpdatedEvent ────────────────────────────────────────
+
+export type WhitelistAction = "added" | "removed";
+
+export interface ParsedWhitelistUpdatedEvent {
+  address: string;
+  action: WhitelistAction;
+  caller: string;
+}
+
+/**
+ * Normalise the event payload onto the two values stored in `whitelist_events`.
+ *
+ * A Soroban event payload reaches us either as a positional tuple or as a
+ * struct, and the change may be published as a string ("added" / "removed") or
+ * as a boolean allow flag, so all of those shapes are folded into the same pair
+ * here. Anything else is rejected (null) rather than guessed at — a wrong action
+ * in an audit table is worse than a missing event.
+ */
+function decodeWhitelistAction(payload: unknown): WhitelistAction | null {
+  let value: unknown = payload;
+
+  if (Array.isArray(value)) {
+    value = value[0];
+  } else if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const named = record["action"] ?? record["whitelisted"] ?? record["allowed"];
+    value = named !== undefined ? named : Object.values(record)[0];
+  }
+
+  if (typeof value === "boolean") return value ? "added" : "removed";
+
+  if (typeof value === "string") {
+    switch (value.trim().toLowerCase()) {
+      case "added":
+      case "add":
+      case "allow":
+      case "whitelisted":
+        return "added";
+      case "removed":
+      case "remove":
+      case "revoked":
+      case "denied":
+        return "removed";
+      default:
+        return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Parse the `whitelist_updated` event emitted when a vault adds or removes an
+ * address from its whitelist. `topics[0]` is the event name, `topics[1]` the
+ * affected address and the optional `topics[2]` the admin that made the change.
+ */
+export function parseWhitelistUpdatedEvent(rawEvent: unknown): ParsedWhitelistUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "whitelist_updated") return null;
+
+    const address = String(scValToNative(parsedTopics[1]) ?? "");
+    if (!address) return null;
+
+    const caller = topics.length > 2 ? String(scValToNative(parsedTopics[2]) ?? "") : "";
+
+    const action = decodeWhitelistAction(scValToNative(parsedValue as xdr.ScVal));
+    if (!action) return null;
+
+    return { address, action, caller };
   } catch {
     return null;
   }

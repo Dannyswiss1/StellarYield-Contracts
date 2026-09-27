@@ -17,6 +17,7 @@ import { sseManager } from "../../services/sseManager.js";
 import { logger } from "../../logger.js";
 import { createAdminSessionToken, refreshAdminSessionToken } from "../middleware/auth.js";
 import { getApiKeyUsage } from "../../cache/redis.js";
+import { logAdminAudit } from "../../services/adminAuditLog.js";
 
 const OPENAPI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../openapi");
 
@@ -103,34 +104,6 @@ export async function getSecurityEvents(_req: Request, res: Response, next: Next
 
 const stellarAddressSchema = z.string().length(56).regex(/^G[A-Z2-7]{55}$/);
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
-
-function getClientIp(req: Request): string | null {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    return forwarded.split(",")[0]?.trim() || null;
-  }
-  if (Array.isArray(forwarded)) {
-    return forwarded[0] ?? null;
-  }
-  return req.ip ?? null;
-}
-
-function getRequestBodyHash(body: unknown): string {
-  const normalized = typeof body === "string"
-    ? body
-    : body == null
-      ? ""
-      : JSON.stringify(body);
-  return createHash("sha256").update(normalized).digest("hex");
-}
-
-async function logAdminAudit(req: Request, action: string, target: string): Promise<void> {
-  await query(
-    `INSERT INTO admin_audit_log (api_key_label, action, target, ip_address, request_body_hash, created_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())`,
-    [req.apiKey?.label ?? null, action, target, getClientIp(req), getRequestBodyHash(req.body)],
-  );
-}
 
 interface ApiKeyRecord {
   id: number;
@@ -427,6 +400,32 @@ export async function pauseContractIndexing(req: Request, res: Response, next: N
     await logAdminAudit(req, "pause_contract_indexing", `/api/v1/admin/indexer/${contractId}/pause`);
 
     res.json(formatIndexerContractState(rows[0]));
+// ── Issue #1105: indexer start-block configuration ────────────────────────────
+
+/**
+ * GET /api/v1/admin/indexer/start-block
+ *
+ * The block a fresh indexing run starts from, plus the current cursor. The
+ * start block is stored in `indexer_state.start_ledger`; when that column is
+ * NULL the `INDEXER_START_LEDGER` env var is the fallback (`source:
+ * "environment"`). `active` is false once the cursor has advanced, because the
+ * start block is only consulted while no progress has been recorded.
+ */
+export async function getIndexerStartBlock(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const [{ startBlock, source }, lastLedger] = await Promise.all([
+      indexer.getStartLedgerConfig(),
+      indexer.getLastIndexedLedger(),
+    ]);
+
+    res.json({
+      startBlock,
+      source,
+      envStartLedger: config.indexer.startLedger,
+      lastLedger,
+      running: indexer.isRunning(),
+      active: lastLedger === 0,
+    });
   } catch (err) {
     next(err);
   }
@@ -492,6 +491,51 @@ export async function setContractEventFilter(req: Request, res: Response, next: 
     await logAdminAudit(req, "set_contract_event_filter", `/api/v1/admin/indexer/${contractId}/event-filter`);
 
     res.json(formatIndexerContractState(rows[0]));
+ * PUT /api/v1/admin/indexer/start-block
+ *
+ * Body: `{ "startBlock": <ledger> }`. Persists the origin of a fresh indexing
+ * run. A start block ahead of the current cursor is rejected: it would skip
+ * every ledger between the two. The value takes effect on the next indexer
+ * start, never mid-run, so the cursor is left untouched.
+ */
+export async function updateIndexerStartBlock(req: Request, res: Response, next: NextFunction) {
+  try {
+    const startBlockSchema = z.object({
+      startBlock: z.number().int().min(0),
+    }).strict();
+
+    const parsed = startBlockSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "BadRequest",
+        message: "startBlock must be a non-negative integer",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+
+    const { startBlock } = parsed.data;
+    const lastLedger = await indexer.getLastIndexedLedger();
+
+    if (startBlock > lastLedger) {
+      res.status(400).json({
+        error: "BadRequest",
+        message: `startBlock must not be ahead of the current indexer cursor (${lastLedger})`,
+      });
+      return;
+    }
+
+    await indexer.saveStartLedgerConfig(startBlock);
+    await logAdminAudit(req, "update_indexer_start_block", "/api/v1/admin/indexer/start-block");
+
+    res.json({
+      startBlock,
+      source: "database",
+      envStartLedger: config.indexer.startLedger,
+      lastLedger,
+      running: indexer.isRunning(),
+      active: lastLedger === 0,
+    });
   } catch (err) {
     next(err);
   }

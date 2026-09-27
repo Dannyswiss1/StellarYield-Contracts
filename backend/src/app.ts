@@ -21,6 +21,7 @@ import { validateRouter } from "./api/routes/validate.js";
 import { utilsRouter } from "./api/routes/utils.js";
 import { codegenRouter } from "./api/routes/codegen.js";
 import { notificationsRouter } from "./api/routes/notifications.js";
+import { gdprRouter } from "./api/routes/gdpr.js";
 import { debugRoutesHandler } from "./api/routes/debugRoutes.js";
 import { analyticsRouter } from "./api/routes/analytics.js";
 import { platformStatsRouter, userVaultActivityRouter } from "./api/routes/platformStats.js";
@@ -51,7 +52,7 @@ function initStaticCache(): void {
 }
 
 initStaticCache();
-import { httpRequestsTotal, getMetrics } from "./services/metrics.js";
+import { httpRequestsTotal, getMetrics, recordHttp5xx } from "./services/metrics.js";
 import { setupOpenApiRoutes } from "./services/openapi.js";
 import { schema } from "./graphql/schema.js";
 import { apolloMiddleware } from "./graphql/apolloServer.js";
@@ -117,6 +118,10 @@ export function createApp(): Express {
     res.on("finish", () => {
       const route = req.route?.path ?? req.path;
       httpRequestsTotal.inc({ method: req.method, route, status: res.statusCode });
+      // 5xx error-rate counter (#1091). The `finish` hook is the single place
+      // every completed response passes through, so it sees 5xx replies written
+      // by the error handler as well as by controllers and middleware.
+      recordHttp5xx(req.method, route, res.statusCode, req.route !== undefined);
     });
     next();
   });
@@ -141,6 +146,9 @@ export function createApp(): Express {
   app.use("/api/v1/factory", publicLimiter, factoryRouter);
   app.use("/api/v1/proxy", authLimiter, proxyRouter);
   app.use("/api/v1/admin/notifications", authLimiter, notificationsRouter);
+  // GDPR data subject rights (#1110 export, #1111 erasure) — admin keys only,
+  // so the router applies its own requireApiKey({ role: "admin" }).
+  app.use("/api/v1/gdpr", authLimiter, gdprRouter);
   // Feature flag admin endpoints — must be mounted before /api/v1/admin to
   // avoid the admin auth middleware consuming /api/v1/admin/feature-flags (#916)
   app.use("/api/v1/admin/feature-flags", authLimiter, featureFlagsRouter);

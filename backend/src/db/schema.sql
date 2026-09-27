@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS indexed_events (
 CREATE TABLE IF NOT EXISTS indexer_state (
   id              SERIAL PRIMARY KEY,
   last_ledger     INT NOT NULL DEFAULT 0,
+  start_ledger    INT,
   updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
