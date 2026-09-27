@@ -1859,7 +1859,11 @@ export class Indexer {
       logger.warn({ err, contractId }, "Failed to find vault for transfer");
     }
 
-    const txHash = event.id ?? event.txHash ?? null;
+    // The transaction hash, not the event id. `tx_hash` is read back to trace a
+    // flagged address or a collected fee to its transaction, so an event id there
+    // makes that lookup miss. The event id is only a fallback for a client that
+    // omits txHash.
+    const txHash = event.txHash ?? event.id ?? null;
     const ledger = typeof event.ledger === "number" ? event.ledger : null;
     const amountStr = transfer.amount.toString();
 
@@ -1915,7 +1919,7 @@ export class Indexer {
     feeEvent: ParsedTransferFeeCollectedEvent,
     event: any,
   ): Promise<void> {
-    const txHash = event.id ?? event.txHash ?? null;
+    const txHash = event.txHash ?? event.id ?? null;
     const ledger = typeof event.ledger === "number" ? event.ledger : null;
     const feeAmountStr = feeEvent.feeAmount.toString();
 

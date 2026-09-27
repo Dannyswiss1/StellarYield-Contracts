@@ -94,6 +94,9 @@ describe("event type resolution (#1106)", () => {
     expect(KNOWN_EVENT_TYPES.has("deposit")).toBe(true);
     expect(KNOWN_EVENT_TYPES.has("yield_dis")).toBe(true);
     expect(KNOWN_EVENT_TYPES.has("yield_distributed")).toBe(true);
+    // #1074: a contract must be able to opt into share transfer indexing.
+    expect(KNOWN_EVENT_TYPES.has("transfer")).toBe(true);
+    expect(isEventTypeAllowed(makeEvent("transfer", VAULT_A), ["transfer"])).toBe(true);
     expect(KNOWN_EVENT_TYPES.has("bogus")).toBe(false);
   });
 });

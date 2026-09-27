@@ -82,6 +82,30 @@ export function makeWithdrawEvent(
   };
 }
 
+/**
+ * SEP-41 share `transfer` event (#1074).
+ *
+ * Mirrors `emit_transfer` in the vault contract: the address pair travels in the
+ * topics and the amount alone in the value, which is why this builder passes a
+ * bare bigint rather than the tuple the vault's own events use.
+ */
+export function makeTransferEvent(
+  overrides: Partial<BaseOverrides & {
+    from: string;
+    to: string;
+    amount: bigint;
+  }> = {},
+) {
+  const from = overrides.from ?? USER_ADDRESS;
+  const to = overrides.to ?? OTHER_ADDRESS;
+  const amount = overrides.amount ?? 250n;
+  return {
+    ...baseEvent(overrides),
+    topic: [nativeToScVal("transfer"), nativeToScVal(from), nativeToScVal(to)],
+    value: nativeToScVal(amount),
+  };
+}
+
 export function makeYieldDistributedEvent(
   overrides: Partial<BaseOverrides & {
     epoch: number;

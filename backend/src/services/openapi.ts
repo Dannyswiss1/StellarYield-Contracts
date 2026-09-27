@@ -91,6 +91,33 @@ const shareBalanceHistorySchema = z.object({
   recordedAt: z.string().openapi({ example: "2026-09-20T00:00:00.000Z" }),
 });
 
+/** #1071 — yieldPerShare is fixed-point, so a string is the only lossless form. */
+const epochYieldPerShareSchema = z.object({
+  epochId: z.number().openapi({ example: 5 }),
+  yieldPerShare: z.string().openapi({ example: "0.000000000263157895" }),
+  decimals: z.number().openapi({ example: 18 }),
+});
+
+/** #1073 — the window statistics are kept alongside the score that flagged it. */
+const epochAnomalySchema = z.object({
+  epoch: z.number().openapi({ example: 12 }),
+  yieldAmount: z.string().openapi({ example: "25000000" }),
+  meanYield: z.string().openapi({ example: "24700000.0" }),
+  stddevYield: z.string().openapi({ example: "90000.0" }),
+  zScore: z.string().nullable().openapi({ example: "3.4" }),
+  sampleSize: z.number().openapi({ example: 30 }),
+  detectedAt: z.string().openapi({ example: "2026-09-20T04:00:00.000Z" }),
+});
+
+/** #1074 — amounts are strings for the same reason as yieldPerShare. */
+const transferVolumeSchema = z.object({
+  period: z.string().openapi({ example: "7d" }),
+  transferCount: z.number().openapi({ example: 4 }),
+  totalVolume: z.string().openapi({ example: "13000" }),
+  uniqueSenders: z.number().openapi({ example: 3 }),
+  uniqueRecipients: z.number().openapi({ example: 4 }),
+});
+
 const redemptionRequestSchema = z.object({
   id: z.number().openapi({ example: 1 }),
   userAddress: z.string().openapi({ example: "GABCDEF1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCD" }),
@@ -648,6 +675,99 @@ function registerPaths(): void {
     request: { query: z.object({ vaultId: z.coerce.number().optional(), epoch: z.coerce.number().optional() }) },
     responses: {
       200: { description: "List of yield distributions", content: { "application/json": { schema: z.array(epochSchema) } } },
+    },
+  });
+
+  // ── Yield analytics (#1071, #1072, #1073, #1074) ───────────────────────────
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/yields/{contractId}/epochs",
+    summary: "List epochs for a vault, optionally windowed and cursor-paginated",
+    description:
+      "Without a window or page parameter this returns every epoch, as it always has. " +
+      "Supplying `from`, `to`, `limit` or `cursor` switches it to a single ascending page; " +
+      "when more pages remain the continuation token is returned in the `X-Next-Cursor` " +
+      "response header, leaving the body a plain array.",
+    tags: ["Yields"],
+    parameters: [
+      { name: "contractId", in: "path", required: true, schema: { type: "string" } },
+      { name: "from", in: "query", required: false, schema: { type: "integer", minimum: 1 }, description: "Inclusive lowest epoch." },
+      { name: "to", in: "query", required: false, schema: { type: "integer", minimum: 1 }, description: "Inclusive highest epoch." },
+      { name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 500 }, description: "Page size. Defaults to 100." },
+      { name: "cursor", in: "query", required: false, schema: { type: "string" }, description: "Opaque token from a previous page's X-Next-Cursor header." },
+    ],
+    responses: {
+      200: {
+        description: "Epochs in ascending epoch order",
+        headers: {
+          "X-Next-Cursor": { description: "Cursor for the next page. Absent on the last page.", schema: { type: "string" } },
+        },
+        content: { "application/json": { schema: z.array(epochSchema) } },
+      },
+      400: { description: "Invalid cursor or window" },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/yields/{contractId}/epochs/{epochId}/yield-per-share",
+    summary: "Get yield per share for one finalized epoch",
+    description:
+      "Returns the ratio of total yield to total shares for a single epoch. The epoch must be " +
+      "finalized; an epoch that does not exist and one that is still open both answer 404, " +
+      "since neither can be turned into a correct number yet.",
+    tags: ["Yields"],
+    parameters: [
+      { name: "contractId", in: "path", required: true, schema: { type: "string" } },
+      { name: "epochId", in: "path", required: true, schema: { type: "integer", minimum: 1 } },
+    ],
+    responses: {
+      200: { description: "Yield per share", content: { "application/json": { schema: epochYieldPerShareSchema } } },
+      404: { description: "Epoch not found or not yet finalized" },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/admin/vaults/{contractId}/epoch-anomalies",
+    summary: "List epochs whose yield deviated from its rolling mean (requires API key)",
+    description:
+      "Epochs flagged by the daily anomaly scan, newest first. A flag means the yield sat more " +
+      "than three standard deviations away from the mean of that vault's previous 30 epochs — " +
+      "either a real change in the underlying asset or an indexing fault worth a look.",
+    tags: ["Admin"],
+    parameters: [
+      { name: "contractId", in: "path", required: true, schema: { type: "string" } },
+      { name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 500 } },
+    ],
+    responses: {
+      200: { description: "Recorded anomalies, ordered by epoch descending", content: { "application/json": { schema: z.array(epochAnomalySchema) } } },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/vaults/{contractId}/transfer-volume",
+    summary: "Get share transfer volume for a vault token",
+    description:
+      "Aggregates the vault's share transfers over a trailing window of UTC calendar days, so " +
+      "`7d` covers today plus the six preceding dates. `totalVolume` is a string because share " +
+      "amounts exceed the safe-integer range and a JSON number would round them.",
+    tags: ["Vaults"],
+    parameters: [
+      { name: "contractId", in: "path", required: true, schema: { type: "string" } },
+      {
+        name: "period",
+        in: "query",
+        required: false,
+        schema: { type: "string", enum: ["1d", "7d", "30d"], default: "7d" },
+        description: "Trailing window. Defaults to 7d.",
+      },
+    ],
+    responses: {
+      200: { description: "Transfer volume totals", content: { "application/json": { schema: transferVolumeSchema } } },
+      400: { description: "Unsupported period" },
     },
   });
 

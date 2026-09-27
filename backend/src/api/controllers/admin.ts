@@ -12,6 +12,7 @@ import { config } from "../../config.js";
 import { seed } from "../../db/seed.js";
 import { indexer } from "../../services/indexerSingleton.js";
 import { KNOWN_EVENT_TYPES } from "../../services/indexerEventTypes.js";
+import { EpochAnomalyService } from "../../services/epochAnomaly.js";
 import { jobQueue } from "../../services/jobQueue.js";
 import { sseManager } from "../../services/sseManager.js";
 import { logger } from "../../logger.js";
@@ -2215,6 +2216,33 @@ export async function getTransferAlerts(
 }
 
 /**
+ * GET /api/v1/admin/vaults/:contractId/epoch-anomalies (#1073)
+ *
+ * Lists the epochs whose yield sat far from that vault's own recent history, so
+ * an operator can tell a genuine change in the underlying asset apart from an
+ * indexing fault. Read-only: detection runs on its own schedule and this
+ * endpoint only reports what it found.
+ */
+export async function getEpochAnomalies(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = contractAddressSchema.safeParse(req.params["contractId"]);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+      return;
+    }
+
+    // Newest epoch first, so the most recent flag is at the top of the response.
+    const rawLimit = parseInt(String(req.query["limit"] ?? "100"), 10);
+    const limit = Math.max(1, Math.min(500, isNaN(rawLimit) ? 100 : rawLimit));
+
+    const anomalies = await new EpochAnomalyService().listForVault(parsed.data, limit);
+    res.json(anomalies);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * PATCH /api/v1/admin/transfer-alerts/:id/acknowledge
  * Marks a transfer alert as acknowledged.
  */
@@ -2261,4 +2289,3 @@ export async function acknowledgeTransferAlert(
     next(err);
   }
 }
-

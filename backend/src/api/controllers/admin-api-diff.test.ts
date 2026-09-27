@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,15 @@ vi.mock("../../db/index.js", () => ({ query: vi.fn() }));
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const openapiDir = resolve(__dirname, "../../openapi");
+const v2Path = resolve(openapiDir, "v2.json");
+
+// v1.json and v2.json are distinct committed specs, so "restoring" v2 by
+// copying v1 over it silently deleted real content and left the working tree
+// dirty after every run. Snapshot the real bytes and put them back instead.
+const v2Original = readFileSync(v2Path, "utf8");
+afterAll(() => {
+  writeFileSync(v2Path, v2Original);
+});
 
 async function getTestContext() {
   const { getApiDiff } = await import("./admin.js");
@@ -54,6 +63,10 @@ function makeReqRes(query?: any) {
 describe("API Diff Endpoint (#944)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Each test mutates v2 on disk, so start from the committed spec every time.
+    // Without this the tests leaked into each other: the removal test deleted
+    // /health, so the later "modified" test silently mutated nothing.
+    writeFileSync(v2Path, v2Original);
   });
 
   describe("GET /api/v1/admin/api-diff", () => {
@@ -61,7 +74,6 @@ describe("API Diff Endpoint (#944)", () => {
       const { getApiDiff } = await getTestContext();
       
       // Modify v2 to add a new path
-      const v2Path = resolve(openapiDir, "v2.json");
       const v2Spec = JSON.parse(readFileSync(v2Path, "utf8"));
       v2Spec.paths["/api/v1/test/new-endpoint"] = {
         get: {
@@ -80,17 +92,12 @@ describe("API Diff Endpoint (#944)", () => {
           added: expect.arrayContaining(["/api/v1/test/new-endpoint"]),
         }),
       );
-
-      // Restore v2
-      const v1Spec = JSON.parse(readFileSync(resolve(openapiDir, "v1.json"), "utf8"));
-      writeFileSync(v2Path, JSON.stringify(v1Spec, null, 2));
     });
 
     it("returns removed paths when v1 has routes not in v2", async () => {
       const { getApiDiff } = await getTestContext();
       
       // Modify v2 to remove a path
-      const v2Path = resolve(openapiDir, "v2.json");
       const v2Spec = JSON.parse(readFileSync(v2Path, "utf8"));
       const pathToRemove = Object.keys(v2Spec.paths)[0];
       delete v2Spec.paths[pathToRemove];
@@ -105,10 +112,6 @@ describe("API Diff Endpoint (#944)", () => {
           removed: expect.arrayContaining([pathToRemove]),
         }),
       );
-
-      // Restore v2
-      const v1Spec = JSON.parse(readFileSync(resolve(openapiDir, "v1.json"), "utf8"));
-      writeFileSync(v2Path, JSON.stringify(v1Spec, null, 2));
     });
 
     it("returns modified paths when schema changes", async () => {
@@ -132,10 +135,6 @@ describe("API Diff Endpoint (#944)", () => {
           modified: expect.arrayContaining([pathToModify]),
         }),
       );
-
-      // Restore v2
-      const v1Spec = JSON.parse(readFileSync(resolve(openapiDir, "v1.json"), "utf8"));
-      writeFileSync(v2Path, JSON.stringify(v1Spec, null, 2));
     });
 
     it("returns 400 for unknown version string", async () => {
