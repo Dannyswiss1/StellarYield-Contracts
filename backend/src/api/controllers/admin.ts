@@ -2027,3 +2027,116 @@ export async function vacuumDatabase(req: Request, res: Response, next: NextFunc
     next(err);
   }
 }
+
+
+// Issue #1108: indexer event count per contract
+export async function getIndexerEventCounts(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const counts = await indexer.getEventCountsPerContract();
+    res.json(counts);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export const quarterlyReportQuerySchema = z.object({
+  year: z.coerce.number().int().min(2020).max(2100),
+  quarter: z.coerce.number().int().min(1).max(4),
+});
+
+// Issue #1114: quarterly yield report
+export async function getQuarterlyYieldReport(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = quarterlyReportQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid year or quarter parameter (quarter must be 1, 2, 3, or 4)" });
+      return;
+    }
+
+    const { year, quarter } = parsed.data;
+
+    // Define quarter date ranges in UTC
+    const quarterStarts: Record<number, string> = {
+      1: `${year}-01-01T00:00:00.000Z`,
+      2: `${year}-04-01T00:00:00.000Z`,
+      3: `${year}-07-01T00:00:00.000Z`,
+      4: `${year}-10-01T00:00:00.000Z`,
+    };
+    const quarterEnds: Record<number, string> = {
+      1: `${year}-04-01T00:00:00.000Z`,
+      2: `${year}-07-01T00:00:00.000Z`,
+      3: `${year}-10-01T00:00:00.000Z`,
+      4: `${year + 1}-01-01T00:00:00.000Z`,
+    };
+
+    const start = quarterStarts[quarter];
+    const end = quarterEnds[quarter];
+
+    // totalYieldPaid: sum of finalized epoch yields in the quarter
+    const yieldRows = await query<{ total_yield: string }>(
+      `SELECT COALESCE(SUM(yield_amount), 0)::text AS total_yield
+       FROM epochs
+       WHERE (closed_at >= $1 AND closed_at < $2)
+          OR (closed_at IS NULL AND distributed_at >= $1 AND distributed_at < $2)`,
+      [start, end],
+    );
+    const totalYieldPaid = yieldRows[0]?.total_yield ?? "0";
+
+    // totalFeesEarned: fees collected across all vaults in the quarter
+    let totalFeesEarned = "0";
+    try {
+      const feeRows = await query<{ total_fees: string }>(
+        `SELECT COALESCE(SUM(fee_amount), 0)::text AS total_fees
+         FROM transfer_fees
+         WHERE collected_at >= $1 AND collected_at < $2`,
+        [start, end],
+      );
+      totalFeesEarned = feeRows[0]?.total_fees ?? "0";
+    } catch {
+      totalFeesEarned = "0";
+    }
+
+    // peakTvlUsd: maximum single-day TVL snapshot in the quarter
+    const tvlRows = await query<{ peak_tvl: string }>(
+      `WITH daily AS (
+         SELECT date_trunc('day', recorded_at) AS day,
+                SUM(total_assets) AS daily_assets
+         FROM vault_tvl_snapshots
+         WHERE recorded_at >= $1 AND recorded_at < $2
+         GROUP BY date_trunc('day', recorded_at)
+       )
+       SELECT COALESCE(MAX(daily_assets), 0)::text AS peak_tvl
+       FROM daily`,
+      [start, end],
+    );
+    let peakTvlUsd = tvlRows[0]?.peak_tvl ?? "0";
+    if (peakTvlUsd === "0") {
+      const fallbackTvl = await query<{ max_assets: string }>(
+        `SELECT COALESCE(MAX(total_assets), 0)::text AS max_assets
+         FROM vault_tvl_snapshots
+         WHERE recorded_at >= $1 AND recorded_at < $2`,
+        [start, end],
+      );
+      peakTvlUsd = fallbackTvl[0]?.max_assets ?? "0";
+    }
+
+    // uniqueHolders: count of distinct holders with active shares
+    const holderRows = await query<{ count: string }>(
+      `SELECT COUNT(DISTINCT user_address)::text AS count
+       FROM user_vault_positions
+       WHERE shares > 0`,
+    );
+    const uniqueHolders = parseInt(holderRows[0]?.count ?? "0", 10);
+
+    res.json({
+      year,
+      quarter,
+      totalYieldPaid,
+      totalFeesEarned,
+      peakTvlUsd,
+      uniqueHolders,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

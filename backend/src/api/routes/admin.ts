@@ -2,6 +2,8 @@ import { Router } from "express";
 import {
   getAdminStats,
   getAdminIndexer,
+  getIndexerEventCounts,
+  getQuarterlyYieldReport,
   getIndexerStartBlock,
   updateIndexerStartBlock,
   getAdminEvents,
@@ -67,6 +69,8 @@ adminRouter.use(requireApiKey({ minRole: "readonly" }));
 
 adminRouter.get("/stats", getAdminStats);
 adminRouter.get("/indexer", getAdminIndexer);
+// Issue #1108: event counts per contract
+adminRouter.get("/indexer/event-counts", getIndexerEventCounts);
 adminRouter.get("/indexer/stream", streamIndexerProgress);
 adminRouter.post("/vaults/reindex", requireApiKey({ role: "admin" }), async (req, res) => {
   if (config.sandboxMode) {
@@ -121,6 +125,9 @@ adminRouter.get("/compliance/vaults/:contractId/status", getVaultComplianceStatu
 // Issue #802: User compliance summary
 adminRouter.get("/compliance/users/:address/summary", getUserComplianceSummary);
 
+// Issue #1114: quarterly yield report
+adminRouter.get("/reports/quarterly", getQuarterlyYieldReport);
+
 // Issue #1112: regulatory report — vault holder concentration
 adminRouter.get("/regulatory/holder-concentration", getHolderConcentrationReport);
 
@@ -150,3 +157,4 @@ adminRouter.get("/archive/status", requireApiKey({ minRole: "readonly" }), getAr
 
 // Fee tiers and fee rebates (#1099, #1103)
 adminRouter.use("/vaults", adminFeesRouter);
+

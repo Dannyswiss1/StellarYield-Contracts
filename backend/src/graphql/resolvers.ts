@@ -1,3 +1,4 @@
+import { tvlPubSub, type VaultTvlUpdatePayload } from "../services/tvlPubSub.js";
 import { GraphQLError } from "graphql";
 import { UserService } from "../services/user.js";
 import { YieldService } from "../services/yield.js";
@@ -77,6 +78,12 @@ export const root = {
       totalSupply: String(row.total_supply ?? "0"),
     }));
   },
+  vaultTvlUpdated: {
+    subscribe: ({ contractId }: { contractId?: string }) => {
+      return tvlPubSub.asyncIterator(contractId);
+    },
+    resolve: (payload: VaultTvlUpdatePayload) => payload,
+  },
   apiKeys: async (_args: unknown, context: GraphQLContext) => {
     requireRole("admin", context);
     const rows = await query<{ id: number; label: string | null; role: string; created_at: Date }>(
@@ -90,3 +97,4 @@ export const root = {
     }));
   },
 };
+
