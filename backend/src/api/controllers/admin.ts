@@ -491,6 +491,12 @@ export async function setContractEventFilter(req: Request, res: Response, next: 
     await logAdminAudit(req, "set_contract_event_filter", `/api/v1/admin/indexer/${contractId}/event-filter`);
 
     res.json(formatIndexerContractState(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * PUT /api/v1/admin/indexer/start-block
  *
  * Body: `{ "startBlock": <ledger> }`. Persists the origin of a fresh indexing
