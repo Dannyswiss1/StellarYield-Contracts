@@ -5,12 +5,6 @@ export type VaultState =
   | "Closed"
   | "Cancelled";
 
-declare module "express-serve-static-core" {
-  interface Request {
-    queryTimeoutMs?: number;
-  }
-}
-
 export interface Vault {
   id: number;
   contractId: string;
