@@ -13,10 +13,15 @@ import { VaultService } from "./vault.js";
 import { UserService } from "./user.js";
 import { YieldService } from "./yield.js";
 import { NotificationService } from "./notifications.js";
-import { indexerEventsProcessedTotal, indexerLastLedger } from "./metrics.js";
+import {
+  indexerEventsProcessedTotal,
+  indexerLastLedger,
+  indexerProcessingDurationSeconds,
+} from "./metrics.js";
 import { cacheDel } from "../cache/redis.js";
 import { sseService } from "./sse.js";
 import { recordRpcSuccess, recordRpcError } from "./rpcMonitor.js";
+import { TOPIC_EVENT_TYPES } from "./indexerEventTypes.js";
 
 // ── Lightweight trace spans (#827) ────────────────────────────────────────────
 // No external tracing dependency — spans are emitted as structured pino log
@@ -167,6 +172,50 @@ export async function storeIndexedEvent(
   );
 }
 
+// ── Per-contract indexer controls (#1106, #1107) ──────────────────────────────
+
+/** Decodes the first topic of a raw RPC event (its symbol), or null. */
+export function eventTopicName(rawEvent: unknown): string | null {
+  const topics = getEventTopics(rawEvent);
+  if (!topics || topics.length === 0) return null;
+  try {
+    const first = topics[0];
+    const scVal = typeof first === "string" ? xdr.ScVal.fromXDR(first, "base64") : first;
+    const name = String(scValToNative(scVal as xdr.ScVal) ?? "");
+    return name || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stored `event_type` for a raw event, falling back to its topic symbol. */
+export function resolveEventType(rawEvent: unknown): string | null {
+  const name = eventTopicName(rawEvent);
+  if (name === null) return null;
+  return TOPIC_EVENT_TYPES[name] ?? name;
+}
+
+export interface ContractIndexerControl {
+  indexingPaused: boolean;
+  pausedAtLedger: number | null;
+  allowedEventTypes: string[];
+}
+
+/**
+ * Whether an event passes a contract's event-type filter (#1106). An empty
+ * list means no filter. Operators may name either the stored event type
+ * (`yield_distributed`) or the on-chain topic symbol (`yield_dis`).
+ */
+export function isEventTypeAllowed(rawEvent: unknown, allowedTypes: string[]): boolean {
+  if (allowedTypes.length === 0) return true;
+  const topicName = eventTopicName(rawEvent);
+  const eventType = resolveEventType(rawEvent);
+  return (
+    (eventType !== null && allowedTypes.includes(eventType)) ||
+    (topicName !== null && allowedTypes.includes(topicName))
+  );
+}
+
 // ── Indexer ────────────────────────────────────────────────────────────────────
 
 export class Indexer {
@@ -178,6 +227,8 @@ export class Indexer {
   private vaultService: VaultService;
   private userService: UserService;
   private notificationService?: NotificationService;
+  /** Per-contract pause / event-filter settings, refreshed every cycle. */
+  private contractControls = new Map<string, ContractIndexerControl>();
 
   constructor(notificationService?: NotificationService) {
     this.lastLedger = config.indexer.startLedger;
@@ -301,21 +352,28 @@ export class Indexer {
     const from = this.lastLedger + 1;
     tickSpan.attrs["ledgerRange"] = `${from}-${latestLedger}`;
 
-    const contractIds = Array.from(this.watchedContractIds);
-    const filters = contractIds.length > 0
-      ? contractIds.map((id) => ({ contractIds: [id] }))
-      : [];
+    await this.loadContractControls();
+    await this.replayResumedContracts();
 
-    let events: any[];
-    try {
-      const resp = await withBackoff(() =>
-        server.getEvents({ startLedger: from, filters }),
-      );
-      events = resp.events;
-    } catch (err) {
-      logger.warn({ err, from, to: latestLedger }, "RPC error fetching events during tick");
-      finishSpan(tickSpan, { error: true });
-      return;
+    const endBatchTimer = indexerProcessingDurationSeconds.startTimer();
+    const contractIds = this.activeContractIds();
+
+    let events: any[] = [];
+    // Every watched contract is paused: fetching with no filter would return
+    // all network events, so skip the fetch and just advance the cursor.
+    if (contractIds.length > 0 || this.watchedContractIds.size === 0) {
+      const filters = contractIds.map((id) => ({ contractIds: [id] }));
+      try {
+        const resp = await withBackoff(() =>
+          server.getEvents({ startLedger: from, filters }),
+        );
+        events = resp.events;
+      } catch (err) {
+        logger.warn({ err, from, to: latestLedger }, "RPC error fetching events during tick");
+        endBatchTimer();
+        finishSpan(tickSpan, { error: true });
+        return;
+      }
     }
 
     tickSpan.attrs["eventCount"] = events.length;
@@ -328,6 +386,7 @@ export class Indexer {
     for (const event of events) {
       await this.processEvent(event, tickSpan);
     }
+    endBatchTimer();
 
     await this.notificationService?.processRetries();
 
@@ -349,10 +408,13 @@ export class Indexer {
     const totalRange = Math.max(1, tipLedger - initialLedger);
     let batchCount = 0;
 
-    const contractIds = Array.from(this.watchedContractIds);
-    const filters = contractIds.length > 0
-      ? contractIds.map((id) => ({ contractIds: [id] }))
-      : [];
+    await this.loadContractControls();
+    const contractIds = this.activeContractIds();
+    if (contractIds.length === 0 && this.watchedContractIds.size > 0) {
+      logger.info("All watched contracts are paused; skipping backfill");
+      return;
+    }
+    const filters = contractIds.map((id) => ({ contractIds: [id] }));
 
     while (cursor < tipLedger) {
       const batchTo = Math.min(cursor + batchSize, tipLedger);
@@ -363,6 +425,7 @@ export class Indexer {
         `Backfilling ledgers ${cursor + 1}–${batchTo} (${remaining} remaining)`,
       );
 
+      const endBatchTimer = indexerProcessingDurationSeconds.startTimer();
       try {
         const resp = await withBackoff(() =>
           server.getEvents({ startLedger: cursor + 1, filters }),
@@ -375,6 +438,7 @@ export class Indexer {
           );
           await this.processEvent(event);
         }
+        endBatchTimer();
 
         cursor = batchTo;
         this.lastLedger = cursor;
@@ -387,6 +451,7 @@ export class Indexer {
           await onProgress(pct);
         }
       } catch (err) {
+        endBatchTimer();
         logger.warn({ err, from: cursor + 1, to: batchTo }, "RPC error during backfill batch");
         break;
       }
@@ -401,18 +466,122 @@ export class Indexer {
     );
 
     try {
-      await this._processEventInner(event);
+      const control = this.contractControls.get(event.contractId ?? "");
+      if (control?.indexingPaused) {
+        eventSpan.attrs["skipped"] = "contract_paused";
+        return;
+      }
+      if (control && !isEventTypeAllowed(event, control.allowedEventTypes)) {
+        eventSpan.attrs["skipped"] = "event_type_filtered";
+        return;
+      }
+
+      // Count once per event actually indexed (#1109): duplicates, filtered
+      // events and unrecognised events are not counted.
+      if (await this._processEventInner(event)) {
+        indexerEventsProcessedTotal.inc();
+      }
     } finally {
       finishSpan(eventSpan);
     }
   }
 
-  private async _processEventInner(event: any): Promise<void> {
+  /**
+   * Refresh per-contract pause / filter settings from the database. Settings
+   * are written by the admin API, which may run in a different process. On a
+   * read failure the previous settings are kept.
+   */
+  async loadContractControls(): Promise<void> {
+    try {
+      const rows = await query<{
+        contract_id: string;
+        indexing_paused: boolean;
+        paused_at_ledger: number | null;
+        allowed_event_types: string[] | null;
+      }>(
+        `SELECT contract_id, indexing_paused, paused_at_ledger, allowed_event_types
+         FROM indexer_contract_state`,
+      );
+      const controls = new Map<string, ContractIndexerControl>();
+      for (const row of rows ?? []) {
+        controls.set(row.contract_id, {
+          indexingPaused: row.indexing_paused,
+          pausedAtLedger: row.paused_at_ledger ?? null,
+          allowedEventTypes: row.allowed_event_types ?? [],
+        });
+      }
+      this.contractControls = controls;
+    } catch (err) {
+      logger.warn({ err }, "Failed to load indexer contract controls; keeping previous settings");
+    }
+  }
+
+  /** Watched contracts that are not paused (#1107). */
+  private activeContractIds(): string[] {
+    return Array.from(this.watchedContractIds).filter(
+      (id) => !this.contractControls.get(id)?.indexingPaused,
+    );
+  }
+
+  /**
+   * Catch up contracts resumed since the last cycle (#1107). While paused, the
+   * global cursor kept moving without them, so replay each one's events from
+   * the ledger it was paused at up to the current cursor, then clear the
+   * marker. On an RPC failure the marker is kept and the replay retried next
+   * cycle; already-indexed events are de-duplicated by processEvent.
+   */
+  private async replayResumedContracts(): Promise<void> {
+    for (const [contractId, control] of this.contractControls) {
+      if (control.indexingPaused || control.pausedAtLedger === null) continue;
+
+      try {
+        if (control.pausedAtLedger < this.lastLedger) {
+          await this.replayContract(contractId, control.pausedAtLedger + 1, this.lastLedger);
+        }
+        await query(
+          `UPDATE indexer_contract_state
+           SET paused_at_ledger = NULL, updated_at = NOW()
+           WHERE contract_id = $1 AND indexing_paused = FALSE`,
+          [contractId],
+        );
+        control.pausedAtLedger = null;
+        logger.info({ contractId }, "Resumed contract caught up");
+      } catch (err) {
+        logger.warn({ err, contractId }, "Failed to catch up resumed contract; will retry");
+      }
+    }
+  }
+
+  private async replayContract(contractId: string, fromLedger: number, toLedger: number): Promise<void> {
+    const server = getSorobanRpc();
+    const filters = [{ contractIds: [contractId] }];
+    let cursor = fromLedger - 1;
+
+    while (cursor < toLedger) {
+      const batchTo = Math.min(cursor + config.indexer.batchSize, toLedger);
+      const endBatchTimer = indexerProcessingDurationSeconds.startTimer();
+      try {
+        const resp = await withBackoff(() =>
+          server.getEvents({ startLedger: cursor + 1, filters }),
+        );
+        for (const event of resp.events) {
+          // Events past the global cursor are picked up by the regular tick.
+          if ((event.ledger ?? 0) > toLedger) continue;
+          await this.processEvent(event);
+        }
+      } finally {
+        endBatchTimer();
+      }
+      cursor = batchTo;
+    }
+  }
+
+  private async _processEventInner(event: any): Promise<boolean> {
     const existing = await query(
       "SELECT id FROM indexed_events WHERE tx_hash = $1 AND contract_id = $2 AND event_type = $3 AND ledger = $4",
       [event.id ?? event.txHash ?? "", event.contractId ?? "", event.type ?? "", event.ledger ?? 0],
     );
-    if (existing.length > 0) return;
+    if (existing.length > 0) return false;
 
     const deposit = parseDepositEvent(event);
     if (deposit) {
@@ -435,7 +604,7 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for deposit");
       }
-      return;
+      return true;
     }
 
     const withdraw = parseWithdrawEvent(event);
@@ -460,7 +629,7 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for withdraw");
       }
-      return;
+      return true;
     }
 
     const yieldDist = parseYieldDistributedEvent(event);
@@ -483,7 +652,6 @@ export class Indexer {
           }),
         ],
       );
-      indexerEventsProcessedTotal.inc();
       const parsedData = await this.handleYieldDistributed(event.contractId ?? "", yieldDist);
       await this.recordEvent(event, "yield_distributed", parsedData);
       try {
@@ -491,7 +659,7 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for yield_distributed");
       }
-      return;
+      return true;
     }
 
     const cancelFunding = parseCancelFundingEvent(event);
@@ -514,7 +682,7 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for vault.cancelled");
       }
-      return;
+      return true;
     }
 
     const vaultStateChanged = parseVaultStateChangedEvent(event);
@@ -542,7 +710,7 @@ export class Indexer {
           logger.warn({ err: e }, "NotificationService.notify failed for vault.matured");
         }
       }
-      return;
+      return true;
     }
 
     const vaultCreated = parseVaultCreatedEvent(event);
@@ -554,42 +722,42 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for vault_created");
       }
-      return;
+      return true;
     }
 
     const vaultRemoved = parseVaultRemovedEvent(event);
     if (vaultRemoved) {
       await this.handleVaultRemoved(event.contractId ?? "");
       await this.recordEvent(event, "vault_removed");
-      return;
+      return true;
     }
 
     const opAdded = parseOperatorAddedEvent(event);
     if (opAdded) {
       await this.handleOperatorAdded(event.contractId ?? "", opAdded);
       await this.recordEvent(event, "operator_added");
-      return;
+      return true;
     }
 
     const opRemoved = parseOperatorRemovedEvent(event);
     if (opRemoved) {
       await this.handleOperatorRemoved(event.contractId ?? "", opRemoved);
       await this.recordEvent(event, "operator_removed");
-      return;
+      return true;
     }
 
     const roleGranted = parseRoleGrantedEvent(event);
     if (roleGranted) {
       await this.handleRoleGranted(event.contractId ?? "", roleGranted);
       await this.recordEvent(event, "role_granted");
-      return;
+      return true;
     }
 
     const roleRevoked = parseRoleRevokedEvent(event);
     if (roleRevoked) {
       await this.handleRoleRevoked(event.contractId ?? "", roleRevoked);
       await this.recordEvent(event, "role_revoked");
-      return;
+      return true;
     }
 
     const redemptionRequest = parseRequestEarlyRedemptionEvent(event);
@@ -615,7 +783,7 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for user.early_redemption_requested");
       }
-      return;
+      return true;
     }
 
     const yieldClaimed = parseYieldClaimedEvent(event);
@@ -636,8 +804,7 @@ export class Indexer {
           }),
         ],
       );
-      indexerEventsProcessedTotal.inc();
-      return;
+      return true;
     }
 
     const yieldClaimedPartial = parseYieldClaimedPartialEvent(event);
@@ -659,57 +826,56 @@ export class Indexer {
           }),
         ],
       );
-      indexerEventsProcessedTotal.inc();
-      return;
+      return true;
     }
 
     const earlyProcessed = parseEarlyRedemptionProcessedEvent(event);
     if (earlyProcessed) {
       await this.handleEarlyRedemptionProcessed(event.contractId ?? "", earlyProcessed);
       await this.recordEvent(event, "early_redemption_processed");
-      return;
+      return true;
     }
 
     const earlyCancelled = parseEarlyRedemptionCancelledEvent(event);
     if (earlyCancelled) {
       await this.handleEarlyRedemptionCancelled(event.contractId ?? "", earlyCancelled);
       await this.recordEvent(event, "early_redemption_cancelled");
-      return;
+      return true;
     }
 
     const feeUpdated = parseOperatorFeeUpdatedEvent(event);
     if (feeUpdated) {
       await this.handleOperatorFeeUpdated(event.contractId ?? "", feeUpdated);
       await this.recordEvent(event, "operator_fee_updated");
-      return;
+      return true;
     }
 
     const pauseReasonSet = parsePauseReasonSetEvent(event);
     if (pauseReasonSet) {
       await this.handlePauseReasonSet(event.contractId ?? "", pauseReasonSet);
       await this.recordEvent(event, "pause_reason_set");
-      return;
+      return true;
     }
 
     const redemptionQueueUpdated = parseRedemptionQueueUpdatedEvent(event);
     if (redemptionQueueUpdated) {
       await this.handleRedemptionQueueUpdated(event.contractId ?? "", redemptionQueueUpdated);
       await this.recordEvent(event, "redemption_queue_updated");
-      return;
+      return true;
     }
 
     const minimumDepositUpdated = parseMinimumDepositUpdatedEvent(event);
     if (minimumDepositUpdated) {
       await this.handleMinimumDepositUpdated(event.contractId ?? "", minimumDepositUpdated);
       await this.recordEvent(event, "minimum_deposit_updated");
-      return;
+      return true;
     }
 
     const zkmeUpd = parseZkmeVerifierUpdatedEvent(event);
     if (zkmeUpd) {
       await this.handleZkmeVerifierUpdated(event.contractId ?? "", zkmeUpd);
       await this.recordEvent(event, "zkme_upd");
-      return;
+      return true;
     }
 
     const adminTransferred = parseAdminTransferredEvent(event);
@@ -719,7 +885,7 @@ export class Indexer {
         oldAdmin: adminTransferred.oldAdmin,
         newAdmin: adminTransferred.newAdmin,
       });
-      return;
+      return true;
     }
 
     const defaultsUpdated = parseDefaultsUpdatedEvent(event);
@@ -729,7 +895,7 @@ export class Indexer {
         zkmeVerifier: defaultsUpdated.zkmeVerifier,
         cooperator: defaultsUpdated.cooperator,
       });
-      return;
+      return true;
     }
 
     const wasmHashUpdated = parseWasmHashUpdatedEvent(event);
@@ -740,7 +906,7 @@ export class Indexer {
         newHash: wasmHashUpdated.newHash,
         updatedBy: wasmHashUpdated.updatedBy,
       });
-      return;
+      return true;
     }
 
     const kycSet = parseKycSetEvent(event);
@@ -757,21 +923,21 @@ export class Indexer {
           JSON.stringify({ user: kycSet.user, verified: kycSet.verified, timestamp: Number(kycSet.timestamp) }),
         ],
       );
-      return;
+      return true;
     }
 
     const paused = parsePausedEvent(event);
     if (paused) {
       await this.handlePauseState(event.contractId ?? "", true);
       await this.recordEvent(event, "paused");
-      return;
+      return true;
     }
 
     const unpaused = parseUnpausedEvent(event);
     if (unpaused) {
       await this.handlePauseState(event.contractId ?? "", false);
       await this.recordEvent(event, "unpaused");
-      return;
+      return true;
     }
 
     const kycUpdate = parseKycVerifiedEvent(event);
@@ -782,7 +948,7 @@ export class Indexer {
         { user: kycUpdate.user, verified: kycUpdate.verified },
         "Processed kyc_set event",
       );
-      return;
+      return true;
     }
 
     const metadataUpdated = parseMetadataUpdatedEvent(event);
@@ -808,7 +974,7 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for vault.metadata_updated");
       }
-      return;
+      return true;
     }
 
     // ── Issue #968: vault_name_updated ────────────────────────────────────────
@@ -820,8 +986,9 @@ export class Indexer {
         oldName: vaultNameUpdated.oldName,
         newName: vaultNameUpdated.newName,
       });
-      return;
+      return true;
     }
+    return false;
 
     // ── #1094: whitelist_updated ──────────────────────────────────────────────
     const whitelistUpdated = parseWhitelistUpdatedEvent(event);
@@ -1666,7 +1833,6 @@ export class Indexer {
         parsedData ? JSON.stringify(parsedData) : null,
       ],
     );
-    indexerEventsProcessedTotal.inc();
   }
 
   private async persistLastLedger(): Promise<void> {

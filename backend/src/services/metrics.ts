@@ -80,7 +80,16 @@ let sseConnections = 0;
 
 export const indexerEventsProcessedTotal = new client.Counter({
   name: "indexer_events_processed_total",
-  help: "Total number of on-chain events processed by the indexer",
+  help: "Total number of on-chain events indexed (incremented once per event)",
+  registers: [register],
+});
+
+// Per-batch processing time (#1109): one observation per polling tick or
+// backfill batch, covering the event fetch and processing of every event in it.
+export const indexerProcessingDurationSeconds = new client.Histogram({
+  name: "indexer_processing_duration_seconds",
+  help: "Indexer per-batch processing duration in seconds",
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
   registers: [register],
 });
 

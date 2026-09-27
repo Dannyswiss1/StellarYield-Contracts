@@ -5,7 +5,7 @@ import { AppError, ErrorCode } from "../middleware/errors.js";
 
 /**
  * Fee endpoints: platform fee summary (#1101), fee accrual estimate (#1102),
- * fee rebates (#1103) and fee tiers (#1099).
+ * fee revenue chart (#1104), fee rebates (#1103) and fee tiers (#1099).
  *
  * Amounts are NUMERIC in Postgres and returned as decimal strings. The backend
  * has no price feed, so every "Usd" figure is the raw asset amount and equals
@@ -198,6 +198,85 @@ export async function getFeeAccrualEstimate(req: Request, res: Response, next: N
       feeBps: row.fee_bps ?? 0,
       projectionDays: days,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// --- #1104 fee revenue chart ---------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_REVENUE_DAYS = 30;
+const MAX_REVENUE_DAYS = 366;
+
+const dateParam = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/, "must be an ISO date");
+
+export const feeRevenueQuerySchema = z.object({
+  from: dateParam.optional(),
+  to: dateParam.optional(),
+  interval: z.enum(["1d", "7d"]).default("1d"),
+});
+
+const INTERVALS = {
+  "1d": { trunc: "day", step: "1 day" },
+  "7d": { trunc: "week", step: "7 days" },
+} as const;
+
+/** Truncates a parsed date to its UTC calendar day, as YYYY-MM-DD. */
+const utcDay = (d: Date): string => d.toISOString().slice(0, 10);
+
+/**
+ * GET /api/v1/vaults/:contractId/fee-revenue?from=<date>&to=<date>&interval=1d|7d
+ *
+ * Fee revenue time series from the `transfer_fees` view. `1d` returns one point
+ * per UTC calendar day from `from` to `to` inclusive; `7d` returns one point
+ * per ISO week (dated by its Monday) overlapping the range, counting only fees
+ * inside the range. Buckets with no fees return feesUsd "0". Defaults to the
+ * last 30 days; the range is capped at 366 days.
+ */
+export async function getFeeRevenue(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = parseContractId(req);
+    const parsed = feeRevenueQuerySchema.safeParse(req.query);
+    if (!parsed.success) throw badRequest(parsed.error.issues[0]?.message ?? "Invalid query");
+
+    const toDate = parsed.data.to ? new Date(parsed.data.to) : new Date();
+    const fromDate = parsed.data.from
+      ? new Date(parsed.data.from)
+      : new Date(toDate.getTime() - (DEFAULT_REVENUE_DAYS - 1) * DAY_MS);
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+      throw badRequest("Invalid date");
+    }
+
+    const from = utcDay(fromDate);
+    const to = utcDay(toDate);
+    if (from > to) throw badRequest("from must not be after to");
+    const days = Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS) + 1;
+    if (days > MAX_REVENUE_DAYS) {
+      throw badRequest(`Range too large: at most ${MAX_REVENUE_DAYS} days per request`);
+    }
+
+    await requireVault(contractId);
+
+    const { trunc, step } = INTERVALS[parsed.data.interval];
+    const rows = await query<{ date: string; fees: string }>(
+      `SELECT to_char(b.bucket, 'YYYY-MM-DD') AS date,
+              COALESCE(SUM(tf.fee_amount), 0)::text AS fees
+       FROM generate_series(date_trunc($3, $1::date::timestamp), $2::date::timestamp, $4::interval) AS b(bucket)
+       LEFT JOIN transfer_fees tf
+         ON tf.contract_id = $5
+        AND tf.collected_at >= (b.bucket AT TIME ZONE 'UTC')
+        AND tf.collected_at < ((b.bucket + $4::interval) AT TIME ZONE 'UTC')
+        AND tf.collected_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+        AND tf.collected_at < (($2::date + 1)::timestamp AT TIME ZONE 'UTC')
+       GROUP BY b.bucket
+       ORDER BY b.bucket`,
+      [from, to, trunc, step, contractId],
+    );
+
+    res.json(rows.map((r) => ({ date: r.date, feesUsd: r.fees })));
   } catch (err) {
     next(err);
   }

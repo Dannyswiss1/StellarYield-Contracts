@@ -11,6 +11,7 @@ import { query, pool } from "../../db/index.js";
 import { config } from "../../config.js";
 import { seed } from "../../db/seed.js";
 import { indexer } from "../../services/indexerSingleton.js";
+import { KNOWN_EVENT_TYPES } from "../../services/indexerEventTypes.js";
 import { jobQueue } from "../../services/jobQueue.js";
 import { sseManager } from "../../services/sseManager.js";
 import { logger } from "../../logger.js";
@@ -324,6 +325,81 @@ export async function backfillIndexer(req: Request, res: Response, next: NextFun
   }
 }
 
+// ── Per-contract indexer controls (#1106, #1107) ──────────────────────────────
+
+const indexerContractIdSchema = z.string().regex(/^C[A-Z2-7]{55}$/);
+
+export const eventFilterBodySchema = z.object({
+  allowedTypes: z
+    .array(z.string().trim().min(1))
+    .max(64)
+    .refine((types) => types.every((t) => KNOWN_EVENT_TYPES.has(t)), {
+      message: "allowedTypes contains an unknown event type",
+    }),
+});
+
+interface IndexerContractStateRow {
+  contract_id: string;
+  indexing_paused: boolean;
+  allowed_event_types: string[] | null;
+  updated_at: Date | string;
+}
+
+function formatIndexerContractState(row: IndexerContractStateRow) {
+  return {
+    contractId: row.contract_id,
+    indexingPaused: row.indexing_paused,
+    allowedTypes: row.allowed_event_types ?? [],
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+/**
+ * Resolves `:contractId` to a contract the indexer knows about (a vault or the
+ * factory). Sends the 400/404 response itself and returns null on failure.
+ */
+async function resolveIndexedContract(req: Request, res: Response): Promise<string | null> {
+  const parsed = indexerContractIdSchema.safeParse(req.params["contractId"]);
+  if (!parsed.success) {
+    res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+    return null;
+  }
+  const contractId = parsed.data;
+  if (contractId === config.stellar.vaultFactoryContractId) return contractId;
+
+  const rows = await query<{ id: number }>("SELECT id FROM vaults WHERE contract_id = $1", [contractId]);
+  if (rows.length === 0) {
+    res.status(404).json({ error: "NotFound", message: `Contract ${contractId} is not indexed` });
+    return null;
+  }
+  return contractId;
+}
+
+/**
+ * POST /api/v1/admin/indexer/:contractId/pause (#1107)
+ *
+ * Skips the contract in every polling cycle. Records the global indexer ledger
+ * at pause time so a later resume can replay the events missed while paused.
+ * Pausing an already-paused contract keeps the original ledger.
+ */
+export async function pauseContractIndexing(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = await resolveIndexedContract(req, res);
+    if (!contractId) return;
+
+    const rows = await query<IndexerContractStateRow>(
+      `INSERT INTO indexer_contract_state (contract_id, indexing_paused, paused_at_ledger)
+       VALUES ($1, TRUE, (SELECT last_ledger FROM indexer_state ORDER BY id LIMIT 1))
+       ON CONFLICT (contract_id) DO UPDATE
+         SET indexing_paused = TRUE,
+             paused_at_ledger = COALESCE(indexer_contract_state.paused_at_ledger, EXCLUDED.paused_at_ledger),
+             updated_at = NOW()
+       RETURNING contract_id, indexing_paused, allowed_event_types, updated_at`,
+      [contractId],
+    );
+    await logAdminAudit(req, "pause_contract_indexing", `/api/v1/admin/indexer/${contractId}/pause`);
+
+    res.json(formatIndexerContractState(rows[0]));
 // ── Issue #1105: indexer start-block configuration ────────────────────────────
 
 /**
@@ -356,6 +432,65 @@ export async function getIndexerStartBlock(_req: Request, res: Response, next: N
 }
 
 /**
+ * POST /api/v1/admin/indexer/:contractId/resume (#1107)
+ *
+ * Re-enables indexing. `paused_at_ledger` is left in place: the indexer's next
+ * cycle replays the contract from that ledger up to the current cursor and
+ * then clears it, so indexing continues from the last known ledger.
+ */
+export async function resumeContractIndexing(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = await resolveIndexedContract(req, res);
+    if (!contractId) return;
+
+    const rows = await query<IndexerContractStateRow>(
+      `INSERT INTO indexer_contract_state (contract_id, indexing_paused)
+       VALUES ($1, FALSE)
+       ON CONFLICT (contract_id) DO UPDATE
+         SET indexing_paused = FALSE, updated_at = NOW()
+       RETURNING contract_id, indexing_paused, allowed_event_types, updated_at`,
+      [contractId],
+    );
+    await logAdminAudit(req, "resume_contract_indexing", `/api/v1/admin/indexer/${contractId}/resume`);
+
+    res.json(formatIndexerContractState(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/v1/admin/indexer/:contractId/event-filter (#1106)
+ *
+ * Body: { allowedTypes: string[] }. Only the listed event types are indexed for
+ * the contract from the next index run; `[]` removes the filter. Types may be
+ * stored event types (`deposit`, `yield_distributed`) or topic symbols.
+ */
+export async function setContractEventFilter(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = eventFilterBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "BadRequest",
+        message: parsed.error.issues[0]?.message ?? "Invalid request body",
+      });
+      return;
+    }
+    const contractId = await resolveIndexedContract(req, res);
+    if (!contractId) return;
+
+    const allowedTypes = Array.from(new Set(parsed.data.allowedTypes));
+    const rows = await query<IndexerContractStateRow>(
+      `INSERT INTO indexer_contract_state (contract_id, allowed_event_types)
+       VALUES ($1, $2::text[])
+       ON CONFLICT (contract_id) DO UPDATE
+         SET allowed_event_types = EXCLUDED.allowed_event_types, updated_at = NOW()
+       RETURNING contract_id, indexing_paused, allowed_event_types, updated_at`,
+      [contractId, allowedTypes],
+    );
+    await logAdminAudit(req, "set_contract_event_filter", `/api/v1/admin/indexer/${contractId}/event-filter`);
+
+    res.json(formatIndexerContractState(rows[0]));
  * PUT /api/v1/admin/indexer/start-block
  *
  * Body: `{ "startBlock": <ledger> }`. Persists the origin of a fresh indexing
