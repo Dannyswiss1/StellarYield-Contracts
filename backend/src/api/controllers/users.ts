@@ -5,6 +5,7 @@ import { readKycVerified } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
 import { AppError, ErrorCode } from "../middleware/errors.js";
 import { userServiceInstance } from "../../services/userSingleton.js";
+import { decrementSseConnections, incrementSseConnections } from "../../services/metrics.js";
 
 const userService = new UserService();
 
@@ -463,6 +464,10 @@ export async function streamUserPositions(req: Request, res: Response, next: Nex
 
     res.write(`data: ${JSON.stringify({ type: "initial", portfolio })}\n\n`);
 
+    // This stream is written straight to the response instead of going through
+    // SseManager/SseService, so the connection gauge is maintained here (#1092).
+    incrementSseConnections();
+
     const unsubscribe = userServiceInstance.onPositionUpdate(address, (position) => {
       const event = {
         type: "position_updated",
@@ -475,8 +480,69 @@ export async function streamUserPositions(req: Request, res: Response, next: Nex
 
     req.on("close", () => {
       unsubscribe();
+      decrementSseConnections();
       res.end();
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserPortfolioValue(req: Request, res: Response, next: NextFunction) {
+  try {
+    const address = String(req.params["address"]);
+    const portfolioValue = await userService.getUserPortfolioValue(address);
+    res.json(portfolioValue);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserPortfolioHistory(req: Request, res: Response, next: NextFunction) {
+  try {
+    const address = String(req.params["address"]);
+    const fromParam = req.query["from"];
+    const toParam = req.query["to"];
+    const intervalParam = req.query["interval"];
+
+    const from = fromParam ? new Date(String(fromParam)) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const to = toParam ? new Date(String(toParam)) : new Date();
+    const interval = (intervalParam === "1d" || intervalParam === "7d") ? intervalParam : "1d";
+
+    const history = await userService.getUserPortfolioHistory(address, from, to, interval);
+    res.json(history);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserFirstDeposit(req: Request, res: Response, next: NextFunction) {
+  try {
+    const address = String(req.params["address"]);
+    const firstDeposit = await userService.getUserFirstDeposit(address);
+
+    if (!firstDeposit) {
+      res.status(404).json({ error: "NotFound", message: "No deposit found for this address" });
+      return;
+    }
+
+    res.json(firstDeposit);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserRealizedYield(req: Request, res: Response, next: NextFunction) {
+  try {
+    const address = String(req.params["address"]);
+    const fromParam = req.query["from"];
+    const toParam = req.query["to"];
+
+    const from = fromParam ? new Date(String(fromParam)) : undefined;
+    const to = toParam ? new Date(String(toParam)) : undefined;
+
+    const realizedYield = await userService.getUserRealizedYield(address, from, to);
+    res.json(realizedYield);
   } catch (err) {
     next(err);
   }

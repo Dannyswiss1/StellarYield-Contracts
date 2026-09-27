@@ -22,12 +22,14 @@ import {
   getFactoryEvents,
   getFactoryOperators,
 } from "./factory.js";
+import { config } from "../../config.js";
 
 
 function makeRes() {
   return {
     json: vi.fn().mockReturnThis(),
     status: vi.fn().mockReturnThis(),
+    setHeader: vi.fn().mockReturnThis(),
   };
 }
 

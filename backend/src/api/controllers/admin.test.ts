@@ -215,6 +215,8 @@ describe("Admin Controller", () => {
       query.mockResolvedValueOnce([{ count: "3" }]);
       // archiveSizeBytes
       query.mockResolvedValueOnce([{ total: "1048576" }]);
+      // wasmHash (#837)
+      query.mockResolvedValueOnce([{ new_hash: "deadbeef" }]);
 
       const req = {} as any;
       const res = { json: vi.fn() } as any;
@@ -234,6 +236,7 @@ describe("Admin Controller", () => {
         totalValueLocked: "12345",
         epochCount: 3,
         archiveSizeBytes: 1048576,
+        wasmHash: "deadbeef",
       });
     });
 
@@ -249,6 +252,8 @@ describe("Admin Controller", () => {
       query.mockResolvedValueOnce([{ count: "0" }]);
       // archiveSize with 0 total
       query.mockResolvedValueOnce([{ total: "0" }]);
+      // no wasm update indexed yet (#837)
+      query.mockResolvedValueOnce([]);
 
       const req = {} as any;
       const res = { json: vi.fn() } as any;
@@ -262,6 +267,7 @@ describe("Admin Controller", () => {
         totalValueLocked: "0",
         epochCount: 0,
         archiveSizeBytes: 0,
+        wasmHash: null,
       });
     });
 
@@ -277,6 +283,8 @@ describe("Admin Controller", () => {
       query.mockResolvedValueOnce([{ count: "0" }]);
       // archiveSize empty array
       query.mockResolvedValueOnce([]);
+      // wasmHash: no rows indexed (#837)
+      query.mockResolvedValueOnce([]);
 
       const req = {} as any;
       const res = { json: vi.fn() } as any;
@@ -290,6 +298,7 @@ describe("Admin Controller", () => {
         totalValueLocked: "0",
         epochCount: 0,
         archiveSizeBytes: 0,
+        wasmHash: null,
       });
     });
   });
@@ -454,6 +463,8 @@ describe("Admin Controller", () => {
       mockQuery.mockResolvedValueOnce([{ count: "5" }]);
       // getAdminStats: archiveSizeBytes
       mockQuery.mockResolvedValueOnce([{ total: "204800" }]);
+      // getAdminStats: wasmHash (#837)
+      mockQuery.mockResolvedValueOnce([{ new_hash: "cafebabe" }]);
 
       const app = await getApp();
       const res = await supertest(app)
@@ -467,7 +478,41 @@ describe("Admin Controller", () => {
         totalValueLocked: "9999999",
         epochCount: 5,
         archiveSizeBytes: 204800,
+        wasmHash: "cafebabe",
       });
+    });
+
+    it("returns wasmHash: null when no WASM update event has been indexed (#837)", async () => {
+      const { query, getAdminStats } = await getTestContext();
+      query.mockResolvedValueOnce([{ count: "0" }]);
+      query.mockResolvedValueOnce([{ count: "0" }]);
+      query.mockResolvedValueOnce([{ total: "0" }]);
+      query.mockResolvedValueOnce([{ count: "0" }]);
+      query.mockResolvedValueOnce([{ total: "0" }]);
+      query.mockResolvedValueOnce([]);
+
+      const res = { json: vi.fn() } as any;
+      await getAdminStats({} as any, res, vi.fn());
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ wasmHash: null }));
+    });
+
+    it("reads wasmHash from the most recent factory_wasm_history row (#837)", async () => {
+      const { query, getAdminStats } = await getTestContext();
+      query.mockResolvedValueOnce([{ count: "0" }]);
+      query.mockResolvedValueOnce([{ count: "0" }]);
+      query.mockResolvedValueOnce([{ total: "0" }]);
+      query.mockResolvedValueOnce([{ count: "0" }]);
+      query.mockResolvedValueOnce([{ total: "0" }]);
+      query.mockResolvedValueOnce([{ new_hash: "latest-hash" }]);
+
+      const res = { json: vi.fn() } as any;
+      await getAdminStats({} as any, res, vi.fn());
+
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("factory_wasm_history"),
+      );
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ wasmHash: "latest-hash" }));
     });
   });
 

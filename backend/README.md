@@ -136,6 +136,10 @@ connects to the `postgres` service.
 Require `X-API-Key` header with admin key.
 
 - `POST /api/v1/admin/indexer/replay` - replay events for a ledger range.
+- `GET /api/v1/admin/indexer/start-block` / `PUT /api/v1/admin/indexer/start-block` - read or persist the ledger a fresh indexing run starts from (admin key to write). The configured block is the origin used while the indexer cursor is still 0.
+- `GET /api/v1/admin/regulatory/holder-concentration?vaultId=:contractId&topN=` - holder concentration report for one vault: cumulative top-1/5/10 shares, Herfindahl-Hirschman index, risk level, and the top holders.
+- `GET /api/v1/gdpr/users/:address/export` - machine-readable JSON copy of every data category held for a user: profile, positions, balance snapshots, redemptions, notification preferences, roles, fee rebates, blacklist entries, and live plus archived events (portable copy, Art. 20). Admin key.
+- `DELETE /api/v1/gdpr/users/:address?confirm=true` - erase a user's data (Art. 17). `?dryRun=true` previews the plan. Notification preferences and blacklist entries are deleted, financial records are anonymised in place, and event payloads are redacted. Refused with 409 while an AML hold is active. Admin key.
 - `GET /api/v1/admin/vaults/:contractId/audit` - audit log.
 - `GET /api/v1/admin/events` - indexed events.
 - `GET /api/v1/admin/debug/archive` - last 50 archived request/response pairs.

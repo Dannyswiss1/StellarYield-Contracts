@@ -5,12 +5,6 @@ export type VaultState =
   | "Closed"
   | "Cancelled";
 
-declare module "express-serve-static-core" {
-  interface Request {
-    queryTimeoutMs?: number;
-  }
-}
-
 export interface Vault {
   id: number;
   contractId: string;
@@ -208,4 +202,35 @@ export interface PortfolioDiversification {
   vaultCount: number;
   categoryCount: number;
   herfindahlIndex: number;
+}
+
+export interface PortfolioValuePosition {
+  contractId: string;
+  shares: string;
+  valueUsd: string;
+  shareOfVault: number;
+}
+
+export interface PortfolioValueResponse {
+  address: string;
+  totalValueUsd: string;
+  positions: PortfolioValuePosition[];
+}
+
+export interface PortfolioHistoryEntry {
+  date: string;
+  totalValueUsd: string;
+}
+
+export interface FirstDepositResponse {
+  address: string;
+  firstDepositAt: Date;
+  contractId: string;
+}
+
+export interface RealizedYieldEntry {
+  contractId: string;
+  epochId: number;
+  yieldClaimed: string;
+  claimedAt: Date;
 }

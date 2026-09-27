@@ -2,9 +2,16 @@ import { Router } from "express";
 import {
   getAdminStats,
   getAdminIndexer,
+  getIndexerEventCounts,
+  getQuarterlyYieldReport,
+  getIndexerStartBlock,
+  updateIndexerStartBlock,
   getAdminEvents,
   getVaultAudit,
   backfillIndexer,
+  pauseContractIndexing,
+  resumeContractIndexing,
+  setContractEventFilter,
   deleteApiKey,
   getApiKeys,
   updateApiKeyDescription,
@@ -46,7 +53,9 @@ import {
 } from "../controllers/admin.js";
 import { getRequestArchive } from "../controllers/debugArchive.js";
 import { postArchiveRestore, getArchiveStatusHandler } from "../controllers/archiveAdmin.js";
+import { getHolderConcentrationReport } from "../controllers/regulatoryReports.js";
 import { requireApiKey } from "../middleware/auth.js";
+import { adminFeesRouter } from "./fees.js";
 import { ipAllowlist } from "../middleware/ipAllowlist.js";
 import { config } from "../../config.js";
 import { jobQueue } from "../../services/jobQueue.js";
@@ -60,6 +69,8 @@ adminRouter.use(requireApiKey({ minRole: "readonly" }));
 
 adminRouter.get("/stats", getAdminStats);
 adminRouter.get("/indexer", getAdminIndexer);
+// Issue #1108: event counts per contract
+adminRouter.get("/indexer/event-counts", getIndexerEventCounts);
 adminRouter.get("/indexer/stream", streamIndexerProgress);
 adminRouter.post("/vaults/reindex", requireApiKey({ role: "admin" }), async (req, res) => {
   if (config.sandboxMode) {
@@ -72,6 +83,14 @@ adminRouter.post("/vaults/reindex", requireApiKey({ role: "admin" }), async (req
   res.json({ success: true });
 });
 adminRouter.post("/indexer/backfill", requireApiKey({ role: "admin" }), backfillIndexer);
+// Per-contract indexer controls (#1106, #1107)
+adminRouter.post("/indexer/:contractId/pause", requireApiKey({ role: "admin" }), pauseContractIndexing);
+adminRouter.post("/indexer/:contractId/resume", requireApiKey({ role: "admin" }), resumeContractIndexing);
+adminRouter.patch("/indexer/:contractId/event-filter", requireApiKey({ role: "admin" }), setContractEventFilter);
+// Issue #1105: indexer start-block configuration (readable by readonly keys,
+// writable by admins only)
+adminRouter.get("/indexer/start-block", getIndexerStartBlock);
+adminRouter.put("/indexer/start-block", requireApiKey({ role: "admin" }), updateIndexerStartBlock);
 adminRouter.get("/events", getAdminEvents);
 adminRouter.get("/vaults/:contractId/audit", getVaultAudit);
 adminRouter.get("/vaults/archived", getArchivedVaults);
@@ -106,6 +125,12 @@ adminRouter.get("/compliance/vaults/:contractId/status", getVaultComplianceStatu
 // Issue #802: User compliance summary
 adminRouter.get("/compliance/users/:address/summary", getUserComplianceSummary);
 
+// Issue #1114: quarterly yield report
+adminRouter.get("/reports/quarterly", getQuarterlyYieldReport);
+
+// Issue #1112: regulatory report — vault holder concentration
+adminRouter.get("/regulatory/holder-concentration", getHolderConcentrationReport);
+
 // Issue #804: Data retention policy
 adminRouter.get("/retention-policy", getRetentionPolicy);
 adminRouter.patch("/retention-policy", patchRetentionPolicy);
@@ -129,3 +154,7 @@ adminRouter.get("/archive/status", requireApiKey({ minRole: "readonly" }), getAr
 adminRouter.post("/archive/restore", requireApiKey({ role: "admin" }), postArchiveRestore);
 // #922 — Archive status
 adminRouter.get("/archive/status", requireApiKey({ minRole: "readonly" }), getArchiveStatusHandler);
+
+// Fee tiers and fee rebates (#1099, #1103)
+adminRouter.use("/vaults", adminFeesRouter);
+

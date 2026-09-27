@@ -12,6 +12,7 @@ const JOB_TYPES: Record<string, SendOptions> = {
   "document-accessibility-check": { retryLimit: 3, retryDelay: 60, retryBackoff: true },
   "api-key-inactivity-sweep": { retryLimit: 3, retryDelay: 300, retryBackoff: false },
   "archival": { retryLimit: 3, retryDelay: 300, retryBackoff: false },
+  "sanctions-auto-blacklist": { retryLimit: 3, retryDelay: 300, retryBackoff: true },
 };
 
 type JobTypeName = keyof typeof JOB_TYPES;
@@ -71,6 +72,13 @@ class JobQueue {
       await this.boss.schedule("api-key-inactivity-sweep", "0 3 * * *", {});
     } catch (err) {
       logger.warn({ err }, "Could not register api-key-inactivity-sweep schedule on boss start");
+    }
+
+    // Schedule daily sanctions screening at 01:00 UTC (#1113)
+    try {
+      await this.boss.schedule("sanctions-auto-blacklist", "0 1 * * *", {});
+    } catch (err) {
+      logger.warn({ err }, "Could not register sanctions-auto-blacklist schedule on boss start");
     }
 
     // Schedule archival job with pg-boss using ARCHIVE_CRON
@@ -137,6 +145,15 @@ class JobQueue {
       for (const _job of jobs) {
         await runWithMetrics("api-key-inactivity-sweep", async () => {
           await deactivateInactiveApiKeys();
+        });
+      }
+    });
+
+    await this.boss.work<Record<string, unknown>>("sanctions-auto-blacklist", async (jobs: Job<Record<string, unknown>>[]) => {
+      const { runSanctionsCheck } = await import("./sanctionsWorker.js");
+      for (const _job of jobs) {
+        await runWithMetrics("sanctions-auto-blacklist", async () => {
+          await runSanctionsCheck();
         });
       }
     });
@@ -230,3 +247,4 @@ class JobQueue {
 }
 
 export const jobQueue = new JobQueue();
+

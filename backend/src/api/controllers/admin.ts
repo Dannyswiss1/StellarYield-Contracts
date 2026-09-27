@@ -11,11 +11,13 @@ import { query, pool } from "../../db/index.js";
 import { config } from "../../config.js";
 import { seed } from "../../db/seed.js";
 import { indexer } from "../../services/indexerSingleton.js";
+import { KNOWN_EVENT_TYPES } from "../../services/indexerEventTypes.js";
 import { jobQueue } from "../../services/jobQueue.js";
 import { sseManager } from "../../services/sseManager.js";
 import { logger } from "../../logger.js";
 import { createAdminSessionToken, refreshAdminSessionToken } from "../middleware/auth.js";
 import { getApiKeyUsage } from "../../cache/redis.js";
+import { logAdminAudit } from "../../services/adminAuditLog.js";
 
 const OPENAPI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../openapi");
 
@@ -102,34 +104,6 @@ export async function getSecurityEvents(_req: Request, res: Response, next: Next
 
 const stellarAddressSchema = z.string().length(56).regex(/^G[A-Z2-7]{55}$/);
 const contractAddressSchema = z.string().length(56).regex(/^C[A-Z2-7]{55}$/);
-
-function getClientIp(req: Request): string | null {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    return forwarded.split(",")[0]?.trim() || null;
-  }
-  if (Array.isArray(forwarded)) {
-    return forwarded[0] ?? null;
-  }
-  return req.ip ?? null;
-}
-
-function getRequestBodyHash(body: unknown): string {
-  const normalized = typeof body === "string"
-    ? body
-    : body == null
-      ? ""
-      : JSON.stringify(body);
-  return createHash("sha256").update(normalized).digest("hex");
-}
-
-async function logAdminAudit(req: Request, action: string, target: string): Promise<void> {
-  await query(
-    `INSERT INTO admin_audit_log (api_key_label, action, target, ip_address, request_body_hash, created_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())`,
-    [req.apiKey?.label ?? null, action, target, getClientIp(req), getRequestBodyHash(req.body)],
-  );
-}
 
 interface ApiKeyRecord {
   id: number;
@@ -280,14 +254,20 @@ export async function getAdminStats(_req: Request, res: Response, next: NextFunc
     const archiveSizeRows = await query<{ total: string }>(
       "SELECT COALESCE(SUM(pg_total_relation_size(relid)), 0)::text AS total FROM pg_stat_user_tables WHERE relname LIKE '%_archive'",
     );
+    // Factory WASM hash from the most recent indexed update event (#837).
+    const wasmRows = await query<{ new_hash: string }>(
+      "SELECT new_hash FROM factory_wasm_history ORDER BY recorded_at DESC, id DESC LIMIT 1",
+    );
 
     const vaultCount = parseInt(vaultCountRows[0]?.count ?? "0", 10);
     const userCount = parseInt(userCountRows[0]?.count ?? "0", 10);
     const totalValueLocked = totalAssetsRows[0]?.total ?? "0";
     const epochCount = parseInt(epochCountRows[0]?.count ?? "0", 10);
     const archiveSizeBytes = parseInt(archiveSizeRows[0]?.total ?? "0", 10);
+    // Null until the first wasm_upd event has been indexed.
+    const wasmHash = wasmRows[0]?.new_hash ?? null;
 
-    res.json({ vaultCount, userCount, totalValueLocked, epochCount, archiveSizeBytes });
+    res.json({ vaultCount, userCount, totalValueLocked, epochCount, archiveSizeBytes, wasmHash });
   } catch (err) {
     next(err);
   }
@@ -340,6 +320,233 @@ export async function backfillIndexer(req: Request, res: Response, next: NextFun
 
     // Return 202 Accepted immediately
     res.status(202).json({ queued: true, fromLedger, toLedger, jobId });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Per-contract indexer controls (#1106, #1107) ──────────────────────────────
+
+const indexerContractIdSchema = z.string().regex(/^C[A-Z2-7]{55}$/);
+
+export const eventFilterBodySchema = z.object({
+  allowedTypes: z
+    .array(z.string().trim().min(1))
+    .max(64)
+    .refine((types) => types.every((t) => KNOWN_EVENT_TYPES.has(t)), {
+      message: "allowedTypes contains an unknown event type",
+    }),
+});
+
+interface IndexerContractStateRow {
+  contract_id: string;
+  indexing_paused: boolean;
+  allowed_event_types: string[] | null;
+  updated_at: Date | string;
+}
+
+function formatIndexerContractState(row: IndexerContractStateRow) {
+  return {
+    contractId: row.contract_id,
+    indexingPaused: row.indexing_paused,
+    allowedTypes: row.allowed_event_types ?? [],
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+/**
+ * Resolves `:contractId` to a contract the indexer knows about (a vault or the
+ * factory). Sends the 400/404 response itself and returns null on failure.
+ */
+async function resolveIndexedContract(req: Request, res: Response): Promise<string | null> {
+  const parsed = indexerContractIdSchema.safeParse(req.params["contractId"]);
+  if (!parsed.success) {
+    res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+    return null;
+  }
+  const contractId = parsed.data;
+  if (contractId === config.stellar.vaultFactoryContractId) return contractId;
+
+  const rows = await query<{ id: number }>("SELECT id FROM vaults WHERE contract_id = $1", [contractId]);
+  if (rows.length === 0) {
+    res.status(404).json({ error: "NotFound", message: `Contract ${contractId} is not indexed` });
+    return null;
+  }
+  return contractId;
+}
+
+/**
+ * POST /api/v1/admin/indexer/:contractId/pause (#1107)
+ *
+ * Skips the contract in every polling cycle. Records the global indexer ledger
+ * at pause time so a later resume can replay the events missed while paused.
+ * Pausing an already-paused contract keeps the original ledger.
+ */
+export async function pauseContractIndexing(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = await resolveIndexedContract(req, res);
+    if (!contractId) return;
+
+    const rows = await query<IndexerContractStateRow>(
+      `INSERT INTO indexer_contract_state (contract_id, indexing_paused, paused_at_ledger)
+       VALUES ($1, TRUE, (SELECT last_ledger FROM indexer_state ORDER BY id LIMIT 1))
+       ON CONFLICT (contract_id) DO UPDATE
+         SET indexing_paused = TRUE,
+             paused_at_ledger = COALESCE(indexer_contract_state.paused_at_ledger, EXCLUDED.paused_at_ledger),
+             updated_at = NOW()
+       RETURNING contract_id, indexing_paused, allowed_event_types, updated_at`,
+      [contractId],
+    );
+    await logAdminAudit(req, "pause_contract_indexing", `/api/v1/admin/indexer/${contractId}/pause`);
+
+    res.json(formatIndexerContractState(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Issue #1105: indexer start-block configuration ────────────────────────────
+
+/**
+ * GET /api/v1/admin/indexer/start-block
+ *
+ * The block a fresh indexing run starts from, plus the current cursor. The
+ * start block is stored in `indexer_state.start_ledger`; when that column is
+ * NULL the `INDEXER_START_LEDGER` env var is the fallback (`source:
+ * "environment"`). `active` is false once the cursor has advanced, because the
+ * start block is only consulted while no progress has been recorded.
+ */
+export async function getIndexerStartBlock(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const [{ startBlock, source }, lastLedger] = await Promise.all([
+      indexer.getStartLedgerConfig(),
+      indexer.getLastIndexedLedger(),
+    ]);
+
+    res.json({
+      startBlock,
+      source,
+      envStartLedger: config.indexer.startLedger,
+      lastLedger,
+      running: indexer.isRunning(),
+      active: lastLedger === 0,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/v1/admin/indexer/:contractId/resume (#1107)
+ *
+ * Re-enables indexing. `paused_at_ledger` is left in place: the indexer's next
+ * cycle replays the contract from that ledger up to the current cursor and
+ * then clears it, so indexing continues from the last known ledger.
+ */
+export async function resumeContractIndexing(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = await resolveIndexedContract(req, res);
+    if (!contractId) return;
+
+    const rows = await query<IndexerContractStateRow>(
+      `INSERT INTO indexer_contract_state (contract_id, indexing_paused)
+       VALUES ($1, FALSE)
+       ON CONFLICT (contract_id) DO UPDATE
+         SET indexing_paused = FALSE, updated_at = NOW()
+       RETURNING contract_id, indexing_paused, allowed_event_types, updated_at`,
+      [contractId],
+    );
+    await logAdminAudit(req, "resume_contract_indexing", `/api/v1/admin/indexer/${contractId}/resume`);
+
+    res.json(formatIndexerContractState(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/v1/admin/indexer/:contractId/event-filter (#1106)
+ *
+ * Body: { allowedTypes: string[] }. Only the listed event types are indexed for
+ * the contract from the next index run; `[]` removes the filter. Types may be
+ * stored event types (`deposit`, `yield_distributed`) or topic symbols.
+ */
+export async function setContractEventFilter(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = eventFilterBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "BadRequest",
+        message: parsed.error.issues[0]?.message ?? "Invalid request body",
+      });
+      return;
+    }
+    const contractId = await resolveIndexedContract(req, res);
+    if (!contractId) return;
+
+    const allowedTypes = Array.from(new Set(parsed.data.allowedTypes));
+    const rows = await query<IndexerContractStateRow>(
+      `INSERT INTO indexer_contract_state (contract_id, allowed_event_types)
+       VALUES ($1, $2::text[])
+       ON CONFLICT (contract_id) DO UPDATE
+         SET allowed_event_types = EXCLUDED.allowed_event_types, updated_at = NOW()
+       RETURNING contract_id, indexing_paused, allowed_event_types, updated_at`,
+      [contractId, allowedTypes],
+    );
+    await logAdminAudit(req, "set_contract_event_filter", `/api/v1/admin/indexer/${contractId}/event-filter`);
+
+    res.json(formatIndexerContractState(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PUT /api/v1/admin/indexer/start-block
+ *
+ * Body: `{ "startBlock": <ledger> }`. Persists the origin of a fresh indexing
+ * run. A start block ahead of the current cursor is rejected: it would skip
+ * every ledger between the two. The value takes effect on the next indexer
+ * start, never mid-run, so the cursor is left untouched.
+ */
+export async function updateIndexerStartBlock(req: Request, res: Response, next: NextFunction) {
+  try {
+    const startBlockSchema = z.object({
+      startBlock: z.number().int().min(0),
+    }).strict();
+
+    const parsed = startBlockSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "BadRequest",
+        message: "startBlock must be a non-negative integer",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+
+    const { startBlock } = parsed.data;
+    const lastLedger = await indexer.getLastIndexedLedger();
+
+    if (startBlock > lastLedger) {
+      res.status(400).json({
+        error: "BadRequest",
+        message: `startBlock must not be ahead of the current indexer cursor (${lastLedger})`,
+      });
+      return;
+    }
+
+    await indexer.saveStartLedgerConfig(startBlock);
+    await logAdminAudit(req, "update_indexer_start_block", "/api/v1/admin/indexer/start-block");
+
+    res.json({
+      startBlock,
+      source: "database",
+      envStartLedger: config.indexer.startLedger,
+      lastLedger,
+      running: indexer.isRunning(),
+      active: lastLedger === 0,
+    });
   } catch (err) {
     next(err);
   }
@@ -1827,6 +2034,119 @@ export async function vacuumDatabase(req: Request, res: Response, next: NextFunc
     await logAdminAudit(req, "vacuum_database", "/api/v1/admin/db/vacuum");
 
     res.json({ ok: true, tables: targetTables, analyze, command });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+// Issue #1108: indexer event count per contract
+export async function getIndexerEventCounts(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const counts = await indexer.getEventCountsPerContract();
+    res.json(counts);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export const quarterlyReportQuerySchema = z.object({
+  year: z.coerce.number().int().min(2020).max(2100),
+  quarter: z.coerce.number().int().min(1).max(4),
+});
+
+// Issue #1114: quarterly yield report
+export async function getQuarterlyYieldReport(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = quarterlyReportQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid year or quarter parameter (quarter must be 1, 2, 3, or 4)" });
+      return;
+    }
+
+    const { year, quarter } = parsed.data;
+
+    // Define quarter date ranges in UTC
+    const quarterStarts: Record<number, string> = {
+      1: `${year}-01-01T00:00:00.000Z`,
+      2: `${year}-04-01T00:00:00.000Z`,
+      3: `${year}-07-01T00:00:00.000Z`,
+      4: `${year}-10-01T00:00:00.000Z`,
+    };
+    const quarterEnds: Record<number, string> = {
+      1: `${year}-04-01T00:00:00.000Z`,
+      2: `${year}-07-01T00:00:00.000Z`,
+      3: `${year}-10-01T00:00:00.000Z`,
+      4: `${year + 1}-01-01T00:00:00.000Z`,
+    };
+
+    const start = quarterStarts[quarter];
+    const end = quarterEnds[quarter];
+
+    // totalYieldPaid: sum of finalized epoch yields in the quarter
+    const yieldRows = await query<{ total_yield: string }>(
+      `SELECT COALESCE(SUM(yield_amount), 0)::text AS total_yield
+       FROM epochs
+       WHERE (closed_at >= $1 AND closed_at < $2)
+          OR (closed_at IS NULL AND distributed_at >= $1 AND distributed_at < $2)`,
+      [start, end],
+    );
+    const totalYieldPaid = yieldRows[0]?.total_yield ?? "0";
+
+    // totalFeesEarned: fees collected across all vaults in the quarter
+    let totalFeesEarned = "0";
+    try {
+      const feeRows = await query<{ total_fees: string }>(
+        `SELECT COALESCE(SUM(fee_amount), 0)::text AS total_fees
+         FROM transfer_fees
+         WHERE collected_at >= $1 AND collected_at < $2`,
+        [start, end],
+      );
+      totalFeesEarned = feeRows[0]?.total_fees ?? "0";
+    } catch {
+      totalFeesEarned = "0";
+    }
+
+    // peakTvlUsd: maximum single-day TVL snapshot in the quarter
+    const tvlRows = await query<{ peak_tvl: string }>(
+      `WITH daily AS (
+         SELECT date_trunc('day', recorded_at) AS day,
+                SUM(total_assets) AS daily_assets
+         FROM vault_tvl_snapshots
+         WHERE recorded_at >= $1 AND recorded_at < $2
+         GROUP BY date_trunc('day', recorded_at)
+       )
+       SELECT COALESCE(MAX(daily_assets), 0)::text AS peak_tvl
+       FROM daily`,
+      [start, end],
+    );
+    let peakTvlUsd = tvlRows[0]?.peak_tvl ?? "0";
+    if (peakTvlUsd === "0") {
+      const fallbackTvl = await query<{ max_assets: string }>(
+        `SELECT COALESCE(MAX(total_assets), 0)::text AS max_assets
+         FROM vault_tvl_snapshots
+         WHERE recorded_at >= $1 AND recorded_at < $2`,
+        [start, end],
+      );
+      peakTvlUsd = fallbackTvl[0]?.max_assets ?? "0";
+    }
+
+    // uniqueHolders: count of distinct holders with active shares
+    const holderRows = await query<{ count: string }>(
+      `SELECT COUNT(DISTINCT user_address)::text AS count
+       FROM user_vault_positions
+       WHERE shares > 0`,
+    );
+    const uniqueHolders = parseInt(holderRows[0]?.count ?? "0", 10);
+
+    res.json({
+      year,
+      quarter,
+      totalYieldPaid,
+      totalFeesEarned,
+      peakTvlUsd,
+      uniqueHolders,
+    });
   } catch (err) {
     next(err);
   }
