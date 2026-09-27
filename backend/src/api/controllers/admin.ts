@@ -2151,3 +2151,114 @@ export async function getQuarterlyYieldReport(req: Request, res: Response, next:
     next(err);
   }
 }
+
+// ── Issues #1077, #1078: Transfer Alerts ───────────────────────────────────────
+
+interface TransferAlertRow {
+  id: number;
+  vault_id: number | null;
+  contract_id: string | null;
+  type: string;
+  amount: string | null;
+  from_address: string | null;
+  to_address: string | null;
+  tx_hash: string | null;
+  details: Record<string, unknown> | null;
+  created_at: Date;
+  acknowledged_at: Date | null;
+}
+
+/**
+ * GET /api/v1/admin/transfer-alerts
+ * Lists transfer alerts. By default, returns unacknowledged alerts.
+ */
+export async function getTransferAlerts(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { acknowledged, status } = req.query as { acknowledged?: string; status?: string };
+
+    let whereClause = "WHERE acknowledged_at IS NULL";
+    if (acknowledged === "true" || status === "acknowledged") {
+      whereClause = "WHERE acknowledged_at IS NOT NULL";
+    } else if (acknowledged === "all" || status === "all") {
+      whereClause = "";
+    }
+
+    const rows = await query<TransferAlertRow>(
+      `SELECT id, vault_id, contract_id, type, amount, from_address, to_address, tx_hash, details, created_at, acknowledged_at
+       FROM transfer_alerts
+       ${whereClause}
+       ORDER BY created_at DESC`,
+    );
+
+    res.json(
+      rows.map((row) => ({
+        id: row.id,
+        vaultId: row.vault_id,
+        contractId: row.contract_id,
+        type: row.type,
+        amount: row.amount ? String(row.amount) : null,
+        fromAddress: row.from_address,
+        toAddress: row.to_address,
+        txHash: row.tx_hash,
+        details: row.details,
+        createdAt: row.created_at,
+        acknowledgedAt: row.acknowledged_at,
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/v1/admin/transfer-alerts/:id/acknowledge
+ * Marks a transfer alert as acknowledged.
+ */
+export async function acknowledgeTransferAlert(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid alert id" });
+      return;
+    }
+
+    const rows = await query<TransferAlertRow>(
+      `UPDATE transfer_alerts
+       SET acknowledged_at = NOW()
+       WHERE id = $1
+       RETURNING id, vault_id, contract_id, type, amount, from_address, to_address, tx_hash, details, created_at, acknowledged_at`,
+      [id],
+    );
+
+    if (rows.length === 0) {
+      res.status(404).json({ error: "Transfer alert not found" });
+      return;
+    }
+
+    const row = rows[0];
+    res.json({
+      id: row.id,
+      vaultId: row.vault_id,
+      contractId: row.contract_id,
+      type: row.type,
+      amount: row.amount ? String(row.amount) : null,
+      fromAddress: row.from_address,
+      toAddress: row.to_address,
+      txHash: row.tx_hash,
+      details: row.details,
+      createdAt: row.created_at,
+      acknowledgedAt: row.acknowledged_at,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+

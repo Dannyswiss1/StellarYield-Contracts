@@ -135,3 +135,45 @@ CREATE TABLE IF NOT EXISTS feature_flags (
   rollout_percent    INT NOT NULL DEFAULT 0 CHECK (rollout_percent BETWEEN 0 AND 100),
   updated_at         TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Transfers tracking (#1113)
+CREATE TABLE IF NOT EXISTS transfers (
+  id              SERIAL PRIMARY KEY,
+  vault_id        INT REFERENCES vaults(id),
+  from_address    TEXT NOT NULL,
+  to_address      TEXT NOT NULL,
+  amount          NUMERIC NOT NULL,
+  tx_hash         TEXT,
+  ledger          INT,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Transfer alerts (#1077, #1078)
+CREATE TABLE IF NOT EXISTS transfer_alerts (
+  id              SERIAL PRIMARY KEY,
+  vault_id        INT REFERENCES vaults(id),
+  contract_id     TEXT,
+  type            TEXT NOT NULL,
+  amount          NUMERIC,
+  from_address    TEXT,
+  to_address      TEXT,
+  tx_hash         TEXT,
+  details         JSONB,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  acknowledged_at TIMESTAMPTZ
+);
+
+-- Transfer fees (#1076)
+CREATE TABLE IF NOT EXISTS transfer_fees (
+  id              SERIAL PRIMARY KEY,
+  contract_id     TEXT NOT NULL,
+  from_address    TEXT NOT NULL,
+  to_address      TEXT NOT NULL,
+  fee_amount      NUMERIC NOT NULL,
+  tx_hash         TEXT,
+  ledger          INT,
+  fee_type        TEXT DEFAULT 'transfer_fee',
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  collected_at    TIMESTAMPTZ DEFAULT NOW()
+);
+

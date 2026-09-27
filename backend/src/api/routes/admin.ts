@@ -4,6 +4,8 @@ import {
   getAdminIndexer,
   getIndexerEventCounts,
   getQuarterlyYieldReport,
+  getTransferAlerts,
+  acknowledgeTransferAlert,
   getIndexerStartBlock,
   updateIndexerStartBlock,
   getAdminEvents,
@@ -157,4 +159,9 @@ adminRouter.get("/archive/status", requireApiKey({ minRole: "readonly" }), getAr
 
 // Fee tiers and fee rebates (#1099, #1103)
 adminRouter.use("/vaults", adminFeesRouter);
+
+// Issues #1077, #1078: Transfer alerts
+adminRouter.get("/transfer-alerts", getTransferAlerts);
+adminRouter.patch("/transfer-alerts/:id/acknowledge", acknowledgeTransferAlert);
+
 

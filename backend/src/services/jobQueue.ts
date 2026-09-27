@@ -13,6 +13,7 @@ const JOB_TYPES: Record<string, SendOptions> = {
   "api-key-inactivity-sweep": { retryLimit: 3, retryDelay: 300, retryBackoff: false },
   "archival": { retryLimit: 3, retryDelay: 300, retryBackoff: false },
   "sanctions-auto-blacklist": { retryLimit: 3, retryDelay: 300, retryBackoff: true },
+  "transfer-velocity-anomaly-check": { retryLimit: 3, retryDelay: 60, retryBackoff: false },
 };
 
 type JobTypeName = keyof typeof JOB_TYPES;
@@ -79,6 +80,13 @@ class JobQueue {
       await this.boss.schedule("sanctions-auto-blacklist", "0 1 * * *", {});
     } catch (err) {
       logger.warn({ err }, "Could not register sanctions-auto-blacklist schedule on boss start");
+    }
+
+    // Schedule hourly transfer velocity anomaly check (#1078)
+    try {
+      await this.boss.schedule("transfer-velocity-anomaly-check", "0 * * * *", {});
+    } catch (err) {
+      logger.warn({ err }, "Could not register transfer-velocity-anomaly-check schedule on boss start");
     }
 
     // Schedule archival job with pg-boss using ARCHIVE_CRON
@@ -154,6 +162,15 @@ class JobQueue {
       for (const _job of jobs) {
         await runWithMetrics("sanctions-auto-blacklist", async () => {
           await runSanctionsCheck();
+        });
+      }
+    });
+
+    await this.boss.work<Record<string, unknown>>("transfer-velocity-anomaly-check", async (jobs: Job<Record<string, unknown>>[]) => {
+      const { checkTransferVelocity } = await import("./transferVelocityWorker.js");
+      for (const _job of jobs) {
+        await runWithMetrics("transfer-velocity-anomaly-check", async () => {
+          await checkTransferVelocity();
         });
       }
     });
