@@ -11,6 +11,7 @@ import {
   getRedemptionQueue,
   getVaultSnapshot,
   getVaultMetadataHistory,
+  getWhitelistHistory,
   getVaultTopHolders,
   getVaultHolders,
   getVaultHolderCount,
@@ -185,6 +186,13 @@ const metadataHistoryQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
 });
 
+// Whitelist history endpoint (#1094): same pagination shape as the other
+// history endpoints.
+const whitelistHistoryQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
+});
+
 // TVL history endpoint (#864): from/to range plus explicit bucket strategy.
 const tvlHistoryQuerySchema = z.object({
   from: z.string().optional(),
@@ -274,6 +282,13 @@ vaultsRouter.get(
   validateParams(vaultParamsSchema),
   validateQuery(metadataHistoryQuerySchema),
   getVaultMetadataHistory,
+);
+// Whitelist change history: GET /api/v1/vaults/:contractId/whitelist-history (#1094)
+vaultsRouter.get(
+  "/:contractId/whitelist-history",
+  validateParams(vaultParamsSchema),
+  validateQuery(whitelistHistoryQuerySchema),
+  getWhitelistHistory,
 );
 // Get vault TVL history: GET /api/v1/vaults/:contractId/tvl-history
 vaultsRouter.get(

@@ -1342,6 +1342,62 @@ export async function getFeeHistory(req: Request, res: Response, next: NextFunct
 }
 
 /**
+ * GET /api/v1/vaults/:contractId/whitelist-history
+ *
+ * Returns every on-chain whitelist change the indexer recorded for a vault,
+ * newest first, for audit purposes. Each entry is one `whitelist_updated` event,
+ * so a vault that was never touched returns an empty list. (#1094)
+ */
+export async function getWhitelistHistory(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const parsed = contractAddressSchema.safeParse(contractId);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+      return;
+    }
+
+    const page = Math.max(1, parseInt(String(req.query["page"] ?? "1"), 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query["pageSize"] ?? "20"), 10) || 20));
+    const offset = (page - 1) * pageSize;
+
+    const rows = await query<{
+      address: string;
+      action: string;
+      tx_hash: string;
+      ledger: number;
+      created_at: Date;
+    }>(
+      `SELECT address, action, tx_hash, ledger, created_at
+       FROM whitelist_events
+       WHERE contract_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2 OFFSET $3`,
+      [parsed.data, pageSize, offset],
+    );
+
+    const countRows = await query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM whitelist_events WHERE contract_id = $1",
+      [parsed.data],
+    );
+    const total = parseInt(countRows[0]?.count ?? "0", 10);
+
+    const data = rows.map((r) => ({
+      address: r.address,
+      action: r.action,
+      txHash: r.tx_hash,
+      ledger: r.ledger,
+      createdAt: r.created_at.toISOString(),
+    }));
+
+    setCacheHeaders(res);
+    res.json({ data, total, page, pageSize });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/v1/vaults/:contractId/operators/log
  *
  * Returns a chronological history of operator additions and removals
