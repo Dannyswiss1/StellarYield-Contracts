@@ -2,6 +2,8 @@ import { Router } from "express";
 import {
   getAdminStats,
   getAdminIndexer,
+  getIndexerStartBlock,
+  updateIndexerStartBlock,
   getAdminEvents,
   getVaultAudit,
   backfillIndexer,
@@ -46,6 +48,7 @@ import {
 } from "../controllers/admin.js";
 import { getRequestArchive } from "../controllers/debugArchive.js";
 import { postArchiveRestore, getArchiveStatusHandler } from "../controllers/archiveAdmin.js";
+import { getHolderConcentrationReport } from "../controllers/regulatoryReports.js";
 import { requireApiKey } from "../middleware/auth.js";
 import { adminFeesRouter } from "./fees.js";
 import { ipAllowlist } from "../middleware/ipAllowlist.js";
@@ -73,6 +76,10 @@ adminRouter.post("/vaults/reindex", requireApiKey({ role: "admin" }), async (req
   res.json({ success: true });
 });
 adminRouter.post("/indexer/backfill", requireApiKey({ role: "admin" }), backfillIndexer);
+// Issue #1105: indexer start-block configuration (readable by readonly keys,
+// writable by admins only)
+adminRouter.get("/indexer/start-block", getIndexerStartBlock);
+adminRouter.put("/indexer/start-block", requireApiKey({ role: "admin" }), updateIndexerStartBlock);
 adminRouter.get("/events", getAdminEvents);
 adminRouter.get("/vaults/:contractId/audit", getVaultAudit);
 adminRouter.get("/vaults/archived", getArchivedVaults);
@@ -106,6 +113,9 @@ adminRouter.get("/positions/export.csv", exportPositionsCsv);
 adminRouter.get("/compliance/vaults/:contractId/status", getVaultComplianceStatus);
 // Issue #802: User compliance summary
 adminRouter.get("/compliance/users/:address/summary", getUserComplianceSummary);
+
+// Issue #1112: regulatory report — vault holder concentration
+adminRouter.get("/regulatory/holder-concentration", getHolderConcentrationReport);
 
 // Issue #804: Data retention policy
 adminRouter.get("/retention-policy", getRetentionPolicy);
