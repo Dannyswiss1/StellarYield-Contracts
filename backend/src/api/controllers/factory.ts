@@ -123,76 +123,35 @@ export async function getFactoryEvents(req: Request, res: Response, next: NextFu
   }
 }
 
-// GET /api/v1/factory/info — factory contract metadata from DB event history (#835)
-export async function getFactoryInfo(_req: Request, res: Response, next: NextFunction) {
+// GET /api/v1/factory/operators — active factory-level role holders
+export async function getFactoryOperators(_req: Request, res: Response, next: NextFunction) {
   try {
-    const contractId = config.stellar.vaultFactoryContractId;
-    if (!contractId) {
-      res.status(503).json({
-        error: "ServiceUnavailable",
-        message: "VAULT_FACTORY_CONTRACT_ID is not configured",
-      });
-      return;
-    }
+    const factoryContractId = config.stellar.vaultFactoryContractId;
 
-    // Most recent admin transfer wins; null until the first adm_xfr is indexed.
-    const adminRows = await query<{ new_admin: string }>(
-      `SELECT new_admin
-       FROM factory_admin_history
-       ORDER BY recorded_at DESC, id DESC
-       LIMIT 1`,
+    const rows = await query<{
+      address?: string;
+      user_address?: string;
+      role: string;
+      assigned_at?: Date | string;
+      assignedAt?: Date | string;
+      granted_at?: Date | string;
+    }>(
+      `SELECT address, role, assigned_at
+       FROM vault_roles
+       WHERE vault_id = $1 AND active = TRUE
+       ORDER BY assigned_at DESC`,
+      [factoryContractId],
     );
 
-    // Earliest factory event we ever indexed — the factory's createdAt.
-    const createdRows = await query<{ created_at: Date | null }>(
-      `SELECT MIN(created_at) AS created_at
-       FROM indexed_events
-       WHERE contract_id = $1`,
-      [contractId],
+    res.json(
+      rows.map((r) => ({
+        address: r.address ?? r.user_address,
+        role: r.role,
+        assignedAt: r.assigned_at ?? r.assignedAt ?? r.granted_at,
+      })),
     );
-
-    const vaultCountRows = await query<{ count: string }>(
-      "SELECT COUNT(*)::text as count FROM vaults WHERE archived = FALSE",
-    );
-
-    const currentWasmHash = await getCurrentFactoryWasmHash();
-
-    res.json({
-      contractId,
-      admin: adminRows[0]?.new_admin ?? null,
-      currentWasmHash,
-      vaultCount: parseInt(vaultCountRows[0]?.count ?? "0", 10),
-      createdAt: createdRows[0]?.created_at ?? null,
-    });
   } catch (err) {
     next(err);
   }
 }
 
-// GET /api/v1/factory/vault-count — vault totals grouped by state (#836)
-export async function getVaultCount(_req: Request, res: Response, next: NextFunction) {
-  try {
-    const filters = VAULT_COUNT_STATES.map(
-      (state) => `COUNT(*) FILTER (WHERE state = '${state}')::text AS "${state}"`,
-    ).join(",\n         ");
-
-    const rows = await query<Record<VaultCountState, string>>(
-      `SELECT ${filters}
-       FROM vaults
-       WHERE archived = FALSE`,
-    );
-
-    const byState = VAULT_COUNT_STATES.reduce<Record<string, number>>((acc, state) => {
-      acc[state] = parseInt(rows[0]?.[state] ?? "0", 10);
-      return acc;
-    }, {});
-
-    // total is always the sum of the reported buckets so the two can never drift.
-    const total = Object.values(byState).reduce((sum, count) => sum + count, 0);
-
-    res.setHeader("Cache-Control", "max-age=30");
-    res.json({ total, byState });
-  } catch (err) {
-    next(err);
-  }
-}
