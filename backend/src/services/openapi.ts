@@ -996,7 +996,31 @@ function registerPaths(): void {
       },
     },
   });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/v1/factory/operators",
+    summary: "Get active factory-level role holders (requires API key)",
+    tags: ["Factory"],
+    responses: {
+      200: {
+        description: "Active factory role holders",
+        content: {
+          "application/json": {
+            schema: z.array(
+              z.object({
+                address: z.string(),
+                role: z.string(),
+                assignedAt: z.string(),
+              }),
+            ),
+          },
+        },
+      },
+    },
+  });
 }
+
 
 registerPaths();
 

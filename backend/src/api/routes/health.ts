@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 import { Router } from "express";
 import { pool } from "../../db/index.js";
 import { config } from "../../config.js";
-import { readTotalVaults } from "../../services/stellar.js";
+import { readTotalVaults, getLatestLedger, getSorobanRpc } from "../../services/stellar.js";
 import { sseManager } from "../../services/sseManager.js";
 
 const { version } = JSON.parse(
@@ -12,6 +12,7 @@ const { version } = JSON.parse(
 export const healthRouter = Router();
 
 const FACTORY_HEALTH_CHECK_TIMEOUT_MS = 3000;
+const RPC_HEALTH_CHECK_TIMEOUT_MS = 3000;
 
 /**
  * Check whether the factory contract is reachable via a lightweight view
@@ -31,6 +32,37 @@ async function checkFactoryReachable(contractId: string): Promise<boolean> {
   }
 }
 
+/**
+ * Check whether the Stellar RPC endpoint is reachable and measure latency via a
+ * lightweight getLatestLedger call bounded by a 3-second timeout.
+ */
+async function checkRpcHealth(): Promise<{ latencyMs: number | null; reachable: boolean }> {
+  const start = Date.now();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error("RPC health check timed out")),
+        RPC_HEALTH_CHECK_TIMEOUT_MS,
+      );
+    });
+
+    const callPromise = typeof getLatestLedger === "function"
+      ? getLatestLedger()
+      : getSorobanRpc().getLatestLedger();
+
+    await Promise.race([callPromise, timeoutPromise]);
+    const latencyMs = Math.max(0, Date.now() - start);
+    return { latencyMs, reachable: true };
+  } catch {
+    return { latencyMs: null, reachable: false };
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 healthRouter.get("/", async (_req, res) => {
   // Surface connection pool utilisation so operators can detect connection
   // exhaustion before it causes query timeouts (#657). `waiting > 0` means
@@ -41,77 +73,29 @@ healthRouter.get("/", async (_req, res) => {
     waiting: pool.waitingCount,
   };
 
+  const mem = process.memoryUsage();
+  const memory = {
+    rssBytes: mem.rss,
+    heapUsedBytes: mem.heapUsed,
+    heapTotalBytes: mem.heapTotal,
+  };
+
   const contractId = config.stellar.vaultFactoryContractId || null;
+  const [factoryReachable, rpc] = await Promise.all([
+    contractId !== null ? checkFactoryReachable(contractId) : Promise.resolve(false),
+    checkRpcHealth(),
+  ]);
   const factory = {
-    reachable: contractId !== null && (await checkFactoryReachable(contractId)),
+    reachable: factoryReachable,
     contractId,
   };
   const sseConnections = sseManager.getSseConnectionCount();
 
   try {
     await pool.query("SELECT 1");
-    res.json({ version, status: "ok", dbPool, factory, sseConnections });
+    res.json({ version, status: "ok", dbPool, factory, rpc, memory, sseConnections });
   } catch {
-    res.status(503).json({ version, status: "error", dbPool, factory, sseConnections });
+    res.status(503).json({ version, status: "error", dbPool, factory, rpc, memory, sseConnections });
   }
 });
 
-const DEPENDENCY_CHECK_TIMEOUT_MS = 3000;
-
-interface DependencyStatus {
-  status: "ok" | "error" | "unconfigured";
-  latencyMs: number | null;
-  error?: string;
-}
-
-/** Run one dependency probe, bounded by a timeout, and record how long it took. */
-async function probe(check: () => Promise<unknown>): Promise<DependencyStatus> {
-  const started = Date.now();
-  try {
-    await Promise.race([
-      check(),
-      new Promise((_resolve, reject) =>
-        setTimeout(() => reject(new Error("timed out")), DEPENDENCY_CHECK_TIMEOUT_MS),
-      ),
-    ]);
-    return { status: "ok", latencyMs: Date.now() - started };
-  } catch (err) {
-    return {
-      status: "error",
-      latencyMs: Date.now() - started,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-/**
- * Per-dependency health (#1135): reports the database, the Stellar RPC and the
- * vault factory contract separately, each with its own latency, so an operator
- * can tell which one is down. Returns 503 if any configured dependency fails.
- */
-healthRouter.get("/dependencies", async (_req, res) => {
-  const contractId = config.stellar.vaultFactoryContractId || null;
-
-  const [database, stellarRpc, factory] = await Promise.all([
-    probe(() => pool.query("SELECT 1")),
-    probe(async () => {
-      const response = await fetch(config.stellar.rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    }),
-    contractId
-      ? probe(() => readTotalVaults(contractId))
-      : Promise.resolve<DependencyStatus>({ status: "unconfigured", latencyMs: null }),
-  ]);
-
-  const dependencies = { database, stellarRpc, factory };
-  const healthy = Object.values(dependencies).every((d) => d.status !== "error");
-  res.status(healthy ? 200 : 503).json({
-    version,
-    status: healthy ? "ok" : "error",
-    dependencies,
-  });
-});
