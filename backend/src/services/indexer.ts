@@ -1,3 +1,4 @@
+import { tvlPubSub } from "./tvlPubSub.js";
 import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -988,7 +989,6 @@ export class Indexer {
       });
       return true;
     }
-    return false;
 
     // ── #1094: whitelist_updated ──────────────────────────────────────────────
     const whitelistUpdated = parseWhitelistUpdatedEvent(event);
@@ -1006,8 +1006,10 @@ export class Indexer {
         action: whitelistUpdated.action,
         caller: whitelistUpdated.caller,
       });
-      return;
+      return true;
     }
+
+    return false;
   }
 
   private async handleMetadataUpdated(
@@ -1916,6 +1918,53 @@ export class Indexer {
    * Record a TVL snapshot for a vault contract.
    * Called after deposit, withdraw, or yield_distributed events.
    */
+  /**
+   * Return event count breakdown per contract for admin visibility (#1108).
+   */
+  async getEventCountsPerContract(): Promise<Array<{
+    contractId: string;
+    totalEvents: number;
+    eventsByType: Record<string, number>;
+  }>> {
+    const rows = await query<{ contract_id: string; event_type: string; count: string }>(
+      `SELECT contract_id, event_type, COUNT(*)::text AS count
+       FROM indexed_events
+       GROUP BY contract_id, event_type`,
+    );
+
+    const allContracts = new Set<string>(this.watchedContractIds);
+    try {
+      const vaultRows = await query<{ contract_id: string }>("SELECT contract_id FROM vaults");
+      for (const v of vaultRows) allContracts.add(v.contract_id);
+    } catch {
+      // ignore
+    }
+    for (const r of rows) allContracts.add(r.contract_id);
+
+    const contractMap = new Map<string, { totalEvents: number; eventsByType: Record<string, number> }>();
+    for (const c of allContracts) {
+      contractMap.set(c, { totalEvents: 0, eventsByType: {} });
+    }
+
+    for (const row of rows) {
+      if (!contractMap.has(row.contract_id)) {
+        contractMap.set(row.contract_id, { totalEvents: 0, eventsByType: {} });
+      }
+      const entry = contractMap.get(row.contract_id)!;
+      const c = parseInt(row.count, 10);
+      entry.eventsByType[row.event_type] = c;
+      entry.totalEvents += c;
+    }
+
+    return Array.from(contractMap.entries())
+      .map(([contractId, data]) => ({
+        contractId,
+        totalEvents: data.totalEvents,
+        eventsByType: data.eventsByType,
+      }))
+      .sort((a, b) => a.contractId.localeCompare(b.contractId));
+  }
+
   private async recordTvlSnapshot(contractId: string): Promise<void> {
     try {
       const vaultRow = await query<{ id: number; total_assets: string; total_supply: string }>(
@@ -1925,11 +1974,19 @@ export class Indexer {
       if (vaultRow.length === 0) return;
 
       const { id: vaultId, total_assets: totalAssets, total_supply: totalSupply } = vaultRow[0];
+      const snapshotAt = new Date();
       await query(
         `INSERT INTO vault_tvl_snapshots (vault_id, total_assets, total_supply, recorded_at)
-         VALUES ($1, $2, $3, NOW())`,
-        [vaultId, totalAssets, totalSupply],
+         VALUES ($1, $2, $3, $4)`,
+        [vaultId, totalAssets, totalSupply, snapshotAt],
       );
+
+      // Emit TVL update event for GraphQL subscriptions (#1115)
+      tvlPubSub.publish({
+        contractId,
+        tvlUsd: totalAssets,
+        snapshotAt: snapshotAt.toISOString(),
+      });
     } catch (err) {
       logger.warn({ err, contractId }, "Failed to record TVL snapshot");
     }
@@ -3502,3 +3559,4 @@ export function parseWhitelistUpdatedEvent(rawEvent: unknown): ParsedWhitelistUp
     return null;
   }
 }
+

@@ -32,6 +32,16 @@ export const schema = buildSchema(`
     createdAt: String!
   }
 
+  type VaultTvlUpdate {
+    contractId: String!
+    tvlUsd: String!
+    snapshotAt: String!
+  }
+
+  type Subscription {
+    vaultTvlUpdated(contractId: String): VaultTvlUpdate!
+  }
+
   type Query {
     health: String
     user(address: String!): User
@@ -40,3 +50,4 @@ export const schema = buildSchema(`
     vaultsByStatus(status: String!): [Vault!]!
   }
 `);
+

@@ -56,6 +56,7 @@ export const envSchema = z.object({
     .default("5000")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(100)),
+  SANCTIONS_LIST_URL: z.string().optional(),
   INDEXER_BATCH_SIZE: z
     .string()
     .default("200")
@@ -285,6 +286,9 @@ export const config = {
   get adminSessionExpiryMinutes() {
     return Number(process.env.ADMIN_SESSION_EXPIRY_MINUTES ?? parsed.data.ADMIN_SESSION_EXPIRY_MINUTES);
   },
+  get sanctionsListUrl(): string | undefined {
+    return process.env.SANCTIONS_LIST_URL ?? parsed.data.SANCTIONS_LIST_URL;
+  },
   get sandboxMode() {
     return (process.env.SANDBOX_MODE ?? String(parsed.data.SANDBOX_MODE)).toLowerCase() === "true" || process.env.SANDBOX_MODE === "1";
   },
@@ -400,4 +404,5 @@ export const ROUTE_SLA_MS: Record<string, number> = {
   "/api/v1/vaults": 200,
   "/api/v1/yields/:contractId/epochs": 500,
 };
+
 
