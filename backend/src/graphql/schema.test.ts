@@ -127,6 +127,8 @@ describe("vaultTvlUpdated subscription - #1115", () => {
     expect(Symbol.asyncIterator in subscriptionResult).toBe(true);
     const iterator = (subscriptionResult as AsyncIterable<any>)[Symbol.asyncIterator]();
 
+    const nextPromise = iterator.next();
+
     // Trigger emission on pubsub
     tvlPubSub.publish({
       contractId: "CV123",
@@ -134,7 +136,6 @@ describe("vaultTvlUpdated subscription - #1115", () => {
       snapshotAt: "2026-09-27T10:00:00.000Z",
     });
 
-    const nextPromise = iterator.next();
     const result = await nextPromise;
     expect(result.value).toEqual({
       data: {

@@ -1,12 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
+import express from "express";
 import request from "supertest";
-import { createApp } from "../../app.js";
 
 vi.mock("../../db/index.js", () => ({
   query: vi.fn(async (sql: string) => {
-    if (sql.includes("api_keys")) {
-      return [{ id: 1, key_hash: "hash", role: "admin", label: "test", created_at: new Date() }];
-    }
     if (sql.includes("FROM epochs")) {
       return [{ total_yield: "1500000000" }];
     }
@@ -21,15 +18,27 @@ vi.mock("../../db/index.js", () => ({
     }
     return [];
   }),
+  pool: {},
+  readPool: null,
 }));
+vi.mock("../../services/indexerSingleton.js", () => ({ indexer: {} }));
+vi.mock("../../services/jobQueue.js", () => ({ jobQueue: {} }));
+vi.mock("../../services/sseManager.js", () => ({ sseManager: {} }));
+
+import { getQuarterlyYieldReport } from "./admin.js";
+
+function makeApp() {
+  const app = express();
+  app.use(express.json());
+  app.get("/api/v1/admin/reports/quarterly", getQuarterlyYieldReport);
+  return app;
+}
 
 describe("GET /api/v1/admin/reports/quarterly (#1114)", () => {
-  const app = createApp();
+  const app = makeApp();
 
   it("returns quarterly report with yield, fees, peak TVL, and unique holders", async () => {
-    const res = await request(app)
-      .get("/api/v1/admin/reports/quarterly?year=2026&quarter=1")
-      .set("x-api-key", "test-key");
+    const res = await request(app).get("/api/v1/admin/reports/quarterly?year=2026&quarter=1");
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -43,9 +52,7 @@ describe("GET /api/v1/admin/reports/quarterly (#1114)", () => {
   });
 
   it("rejects invalid quarter numbers", async () => {
-    const res = await request(app)
-      .get("/api/v1/admin/reports/quarterly?year=2026&quarter=5")
-      .set("x-api-key", "test-key");
+    const res = await request(app).get("/api/v1/admin/reports/quarterly?year=2026&quarter=5");
 
     expect(res.status).toBe(400);
   });

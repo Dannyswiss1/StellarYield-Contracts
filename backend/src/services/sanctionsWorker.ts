@@ -34,7 +34,7 @@ export function parseSanctionsContent(content: string): Set<string> {
     const parts = trimmed.split(",");
     for (const part of parts) {
       const cleaned = part.trim().replace(/^["']|["']$/g, "");
-      if (/^G[A-Z2-7]{55}$/.test(cleaned)) {
+      if (cleaned.length === 56 && (cleaned.startsWith("G") || cleaned.startsWith("C"))) {
         addresses.add(cleaned);
       }
     }

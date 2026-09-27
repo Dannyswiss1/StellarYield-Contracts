@@ -56,11 +56,19 @@ export function formatTokenAmount(
   const fractionPart = decimals > 0 ? digits.slice(digits.length - decimals) : "";
   const decimalString = `${negative ? "-" : ""}${integerPart}${decimals > 0 ? `.${fractionPart}` : ""}`;
 
-  return new Intl.NumberFormat(locale, {
-    minimumFractionDigits: Math.min(2, decimals),
-    maximumFractionDigits: decimals,
-    useGrouping: true,
-  }).format(decimalString as unknown as number);
+  if (decimals <= 20) {
+    return new Intl.NumberFormat(locale, {
+      minimumFractionDigits: Math.min(2, decimals),
+      maximumFractionDigits: decimals,
+      useGrouping: true,
+    }).format(decimalString as unknown as number);
+  }
+
+  const nf = new Intl.NumberFormat(locale, { useGrouping: true });
+  const decimalSeparator = nf.formatToParts(1.1).find((p) => p.type === "decimal")?.value ?? ".";
+  const intFormatted = nf.format(BigInt(integerPart));
+  const sign = negative && !intFormatted.startsWith("-") ? "-" : "";
+  return `${sign}${intFormatted}${decimalSeparator}${fractionPart}`;
 }
 
 /**

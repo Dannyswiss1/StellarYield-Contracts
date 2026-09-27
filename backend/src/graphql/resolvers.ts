@@ -1,4 +1,4 @@
-import { tvlPubSub, type VaultTvlUpdatePayload } from "../services/tvlPubSub.js";
+import { tvlPubSub } from "../services/tvlPubSub.js";
 import { GraphQLError } from "graphql";
 import { UserService } from "../services/user.js";
 import { YieldService } from "../services/yield.js";
@@ -78,11 +78,8 @@ export const root = {
       totalSupply: String(row.total_supply ?? "0"),
     }));
   },
-  vaultTvlUpdated: {
-    subscribe: ({ contractId }: { contractId?: string }) => {
-      return tvlPubSub.asyncIterator(contractId);
-    },
-    resolve: (payload: VaultTvlUpdatePayload) => payload,
+  vaultTvlUpdated: ({ contractId }: { contractId?: string }) => {
+    return tvlPubSub.asyncIterator(contractId);
   },
   apiKeys: async (_args: unknown, context: GraphQLContext) => {
     requireRole("admin", context);

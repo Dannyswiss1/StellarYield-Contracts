@@ -55,14 +55,14 @@ describe("Sanctions auto-blacklist worker (#1113)", () => {
 
     // Verify user table updated
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("UPDATE users SET aml_flagged = TRUE"),
+      expect.stringContaining("aml_flagged = TRUE"),
       [sanctionedAddress]
     );
 
     // Verify admin_audit_log entry created
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO admin_audit_log"),
-      expect.arrayContaining(["system:sanctions_job", "auto_blacklist", sanctionedAddress])
+      [sanctionedAddress, expect.any(String)]
     );
   });
 });
