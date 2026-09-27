@@ -78,8 +78,10 @@ export const root = {
       totalSupply: String(row.total_supply ?? "0"),
     }));
   },
-  vaultTvlUpdated: ({ contractId }: { contractId?: string }) => {
-    return tvlPubSub.asyncIterator(contractId);
+  vaultTvlUpdated: async function* ({ contractId }: { contractId?: string }) {
+    for await (const payload of tvlPubSub.asyncIterator(contractId)) {
+      yield { vaultTvlUpdated: payload };
+    }
   },
   apiKeys: async (_args: unknown, context: GraphQLContext) => {
     requireRole("admin", context);

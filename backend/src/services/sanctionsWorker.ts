@@ -34,7 +34,7 @@ export function parseSanctionsContent(content: string): Set<string> {
     const parts = trimmed.split(",");
     for (const part of parts) {
       const cleaned = part.trim().replace(/^["']|["']$/g, "");
-      if (cleaned.length === 56 && (cleaned.startsWith("G") || cleaned.startsWith("C"))) {
+      if (cleaned.startsWith("G") || cleaned.startsWith("C")) {
         addresses.add(cleaned);
       }
     }
