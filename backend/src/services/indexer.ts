@@ -988,6 +988,8 @@ export class Indexer {
         newName: vaultNameUpdated.newName,
       });
       return true;
+    }
+
     // ── #1094: whitelist_updated ──────────────────────────────────────────────
     const whitelistUpdated = parseWhitelistUpdatedEvent(event);
     if (whitelistUpdated) {
