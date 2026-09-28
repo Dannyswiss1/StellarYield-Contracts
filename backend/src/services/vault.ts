@@ -1,4 +1,4 @@
-import type { Vault, VaultOperator, UserVaultPosition, PaginatedResponse, VaultHolder, VaultHolderSort, OperatorLogEntry } from "../types/index.js";
+import type { Vault, VaultOperator, UserVaultPosition, PaginatedResponse, VaultHolder, VaultHolderSort, OperatorLogEntry, TransferVolume, TransferVolumePeriod } from "../types/index.js";
 import { query } from "../db/index.js";
 import * as db from "../db/index.js";
 import { logger } from "../logger.js";
@@ -520,6 +520,18 @@ function mapVaultRow(row: VaultRow): Vault {
     updatedAt: row.updated_at,
   };
 }
+
+/**
+ * Number of UTC calendar days each transfer-volume period covers (#1074).
+ *
+ * A calendar day is counted inclusively: `1d` is today alone, `7d` is today plus
+ * the six preceding days.
+ */
+export const TRANSFER_VOLUME_PERIOD_DAYS: Record<TransferVolumePeriod, number> = {
+  "1d": 1,
+  "7d": 7,
+  "30d": 30,
+};
 
 export class VaultService {
   /**
@@ -1760,6 +1772,50 @@ export class VaultService {
       projectedValue: projectedFormatted,
       compoundedYield: yieldFormatted,
       epochsProjected: epochs,
+    };
+  }
+
+  /**
+   * Share transfer volume for a vault token over a trailing window (#1074).
+   *
+   * Powers the daily/weekly activity figures shown per vault. The window is
+   * measured in UTC calendar days, so `7d` covers today plus the six days before
+   * it — seven distinct dates, matching what a calendar widget would show,
+   * rather than a rolling 168 hours that straddles eight dates.
+   *
+   * `totalVolume` is returned as a string: share amounts are base units that
+   * exceed `Number.MAX_SAFE_INTEGER`, and a JSON number would silently round
+   * them. Counts are returned as numbers since they are bounded by the size of
+   * the window.
+   */
+  async getTransferVolume(contractId: string, period: TransferVolumePeriod): Promise<TransferVolume> {
+    const days = TRANSFER_VOLUME_PERIOD_DAYS[period];
+
+    const rows = await query<{
+      transfer_count: string;
+      total_volume: string | null;
+      unique_senders: string;
+      unique_recipients: string;
+    }>(
+      `SELECT COUNT(*)::text AS transfer_count,
+              COALESCE(SUM(t.amount), 0)::text AS total_volume,
+              COUNT(DISTINCT t.from_address)::text AS unique_senders,
+              COUNT(DISTINCT t.to_address)::text AS unique_recipients
+       FROM transfers t
+       JOIN vaults v ON v.id = t.vault_id
+       WHERE v.contract_id = $1
+         AND t.created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+                            - make_interval(days => $2::int - 1)`,
+      [contractId, days],
+    );
+
+    const row = rows[0];
+    return {
+      period,
+      transferCount: parseInt(row?.transfer_count ?? "0", 10),
+      totalVolume: row?.total_volume ?? "0",
+      uniqueSenders: parseInt(row?.unique_senders ?? "0", 10),
+      uniqueRecipients: parseInt(row?.unique_recipients ?? "0", 10),
     };
   }
 }

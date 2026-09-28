@@ -14,6 +14,7 @@ const JOB_TYPES: Record<string, SendOptions> = {
   "archival": { retryLimit: 3, retryDelay: 300, retryBackoff: false },
   "sanctions-auto-blacklist": { retryLimit: 3, retryDelay: 300, retryBackoff: true },
   "transfer-velocity-anomaly-check": { retryLimit: 3, retryDelay: 60, retryBackoff: false },
+  "epoch-anomaly-scan": { retryLimit: 3, retryDelay: 300, retryBackoff: true },
 };
 
 type JobTypeName = keyof typeof JOB_TYPES;
@@ -87,6 +88,15 @@ class JobQueue {
       await this.boss.schedule("transfer-velocity-anomaly-check", "0 * * * *", {});
     } catch (err) {
       logger.warn({ err }, "Could not register transfer-velocity-anomaly-check schedule on boss start");
+    }
+
+    // Schedule daily epoch anomaly detection at 04:00 UTC (#1073). It runs after
+    // the sanctions sweep so both daily jobs are not competing for the database
+    // at the same minute.
+    try {
+      await this.boss.schedule("epoch-anomaly-scan", "0 4 * * *", {});
+    } catch (err) {
+      logger.warn({ err }, "Could not register epoch-anomaly-scan schedule on boss start");
     }
 
     // Schedule archival job with pg-boss using ARCHIVE_CRON
@@ -171,6 +181,17 @@ class JobQueue {
       for (const _job of jobs) {
         await runWithMetrics("transfer-velocity-anomaly-check", async () => {
           await checkTransferVelocity();
+        });
+      }
+    });
+
+    await this.boss.work<Record<string, unknown>>("epoch-anomaly-scan", async (jobs: Job<Record<string, unknown>>[]) => {
+      for (const _job of jobs) {
+        await runWithMetrics("epoch-anomaly-scan", async () => {
+          const { EpochAnomalyService } = await import("./epochAnomaly.js");
+          // The scan is idempotent, so a retry after a partial failure re-runs
+          // cleanly instead of duplicating the anomalies already recorded.
+          await new EpochAnomalyService().scanAndRecord();
         });
       }
     });

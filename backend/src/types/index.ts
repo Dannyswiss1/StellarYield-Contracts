@@ -234,3 +234,15 @@ export interface RealizedYieldEntry {
   yieldClaimed: string;
   claimedAt: Date;
 }
+
+/** Trailing window for the per-vault transfer volume endpoint (#1074). */
+export type TransferVolumePeriod = "1d" | "7d" | "30d";
+
+export interface TransferVolume {
+  period: TransferVolumePeriod;
+  transferCount: number;
+  /** Base units as a string; exceeds Number.MAX_SAFE_INTEGER. */
+  totalVolume: string;
+  uniqueSenders: number;
+  uniqueRecipients: number;
+}

@@ -13,6 +13,7 @@ import {
   getVaultMetadataHistory,
   getWhitelistHistory,
   getVaultStatusHistory,
+  getTransferVolume,
   getVaultTopHolders,
   getVaultHolders,
   getVaultHolderCount,
@@ -196,6 +197,13 @@ const whitelistHistoryQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
 });
 
+// Share transfer volume (#1074). A closed set of periods rather than a free-form
+// day count: the analytics widgets only ever ask for these three, and an
+// arbitrary window would make the reported number hard to compare across calls.
+const transferVolumeQuerySchema = z.object({
+  period: z.enum(["1d", "7d", "30d"]).default("7d"),
+});
+
 // TVL history endpoint (#864): from/to range plus explicit bucket strategy.
 const tvlHistoryQuerySchema = z.object({
   from: z.string().optional(),
@@ -295,6 +303,14 @@ vaultsRouter.get(
 );
 // Status / manager change history: GET /api/v1/vaults/:contractId/status-history (#1065, #1068)
 vaultsRouter.get("/:contractId/status-history", validateParams(vaultParamsSchema), getVaultStatusHistory);
+// Share transfer volume for a vault token (#1074):
+// GET /api/v1/vaults/:contractId/transfer-volume?period=1d|7d|30d
+vaultsRouter.get(
+  "/:contractId/transfer-volume",
+  validateParams(vaultParamsSchema),
+  validateQuery(transferVolumeQuerySchema),
+  getTransferVolume,
+);
 // Get vault TVL history: GET /api/v1/vaults/:contractId/tvl-history
 vaultsRouter.get(
   "/:contractId/tvl-history",
