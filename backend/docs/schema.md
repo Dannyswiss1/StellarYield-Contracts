@@ -378,7 +378,7 @@ Only finalized epochs are scored. Each row keeps the window statistics next to t
 
 ### `transfers`
 
-Vault share transfers parsed from SEP-41 `transfer` events. Added in #1113, populated by the indexer as of #1074 and read by the sanctions worker.
+Vault share transfers parsed from SEP-41 `transfer` events. Added in #1113, populated by the indexer added in #1076/#1077 and read by the sanctions worker. #1074 adds the transfer-volume endpoint that reads them.
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
