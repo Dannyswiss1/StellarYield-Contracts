@@ -1399,6 +1399,62 @@ export async function getWhitelistHistory(req: Request, res: Response, next: Nex
 }
 
 /**
+ * GET /api/v1/vaults/:contractId/status-history
+ *
+ * Returns the full audit trail of a vault's on-chain status transitions
+ * (#1065) and manager changes (#1068), newest first. Each entry is one
+ * indexed event, distinguished by `eventType`.
+ */
+export async function getVaultStatusHistory(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const parsed = contractAddressSchema.safeParse(contractId);
+    if (!parsed.success) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid contractId format" });
+      return;
+    }
+
+    const rows = await query<{
+      id: number;
+      contract_id: string;
+      event_type: string;
+      previous_status: string | null;
+      new_status: string | null;
+      previous_manager: string | null;
+      new_manager: string | null;
+      changed_at: Date;
+      tx_hash: string;
+      ledger: number;
+    }>(
+      `SELECT id, contract_id, event_type, previous_status, new_status,
+              previous_manager, new_manager, changed_at, tx_hash, ledger
+       FROM vault_status_history
+       WHERE contract_id = $1
+       ORDER BY changed_at DESC, id DESC`,
+      [parsed.data],
+    );
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      contractId: r.contract_id,
+      eventType: r.event_type,
+      previousStatus: r.previous_status,
+      newStatus: r.new_status,
+      previousManager: r.previous_manager,
+      newManager: r.new_manager,
+      changedAt: r.changed_at.toISOString(),
+      txHash: r.tx_hash,
+      ledger: r.ledger,
+    }));
+
+    setCacheHeaders(res);
+    res.json({ data, total: data.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/v1/vaults/:contractId/operators/log
  *
  * Returns a chronological history of operator additions and removals

@@ -75,6 +75,13 @@ function toBigIntOrZero(value: string | null | undefined): bigint {
   }
 }
 
+// When an event happened on-chain: the ledger close time, or now if the RPC
+// response did not include it.
+function eventChangedAt(rawEvent: any): Date {
+  const closedAt = typeof rawEvent?.ledgerClosedAt === "string" ? new Date(rawEvent.ledgerClosedAt) : null;
+  return closedAt && !Number.isNaN(closedAt.getTime()) ? closedAt : new Date();
+}
+
 function getEventTopics(rawEvent: any): unknown[] | null {
   const topics = rawEvent?.topic ?? rawEvent?.topics;
   return Array.isArray(topics) ? topics : null;
@@ -1009,6 +1016,41 @@ export class Indexer {
       return true;
     }
 
+    // ── #1065: vault_status_changed ───────────────────────────────────────────
+    const vaultStatusChanged = parseVaultStatusChangedEvent(event);
+    if (vaultStatusChanged) {
+      const previousStatus = await this.handleVaultStatusChanged(vaultStatusChanged, event);
+      await this.recordEvent(event, "vault_status_changed", {
+        vault: vaultStatusChanged.vault,
+        previousStatus,
+        newStatus: vaultStatusChanged.status,
+      });
+      return true;
+    }
+
+    // ── #1068: vault_manager_changed ──────────────────────────────────────────
+    const managerChanged = parseVaultManagerChangedEvent(event);
+    if (managerChanged) {
+      const previousManager = await this.handleVaultManagerChanged(managerChanged, event);
+      await this.recordEvent(event, "vault_manager_changed", {
+        vault: managerChanged.vault,
+        previousManager,
+        newManager: managerChanged.newManager,
+      });
+      try {
+        await this.notificationService?.notify("vault.manager_changed", {
+          contractId: managerChanged.vault,
+          previousManager,
+          newManager: managerChanged.newManager,
+          txHash: event.txHash ?? event.id ?? "",
+          ledger: event.ledger ?? 0,
+        });
+      } catch (e) {
+        logger.warn({ err: e }, "NotificationService.notify failed for vault.manager_changed");
+      }
+      return true;
+    }
+
     // ── #1077 / #1113: transfer ───────────────────────────────────────────────
     const transfer = parseTransferEvent(event);
     if (transfer) {
@@ -1792,6 +1834,74 @@ export class Indexer {
       { contractId, address: ev.address, action: ev.action, caller: ev.caller, ledger },
       "Processed whitelist_updated event",
     );
+  }
+
+  /**
+   * Apply a `vault_status_changed` event (#1065): update vaults.status and
+   * append a vault_status_history row. Returns the status the vault had
+   * before, or null when the vault is not indexed yet.
+   */
+  private async handleVaultStatusChanged(
+    ev: ParsedVaultStatusChangedEvent,
+    rawEvent: any,
+  ): Promise<string | null> {
+    const prev = await query<{ status: string }>(
+      "SELECT status FROM vaults WHERE contract_id = $1",
+      [ev.vault],
+    );
+    const previousStatus = prev[0]?.status ?? null;
+
+    await query(
+      "UPDATE vaults SET status = $1, updated_at = NOW() WHERE contract_id = $2",
+      [ev.status, ev.vault],
+    );
+    // The history row is written even for a vault the indexer has not seen
+    // yet: the on-chain transition happened and must be auditable.
+    await query(
+      `INSERT INTO vault_status_history
+         (contract_id, event_type, previous_status, new_status, changed_at, tx_hash, ledger)
+       VALUES ($1, 'status_changed', $2, $3, $4, $5, $6)
+       ON CONFLICT (contract_id, event_type, tx_hash, ledger) DO NOTHING`,
+      [ev.vault, previousStatus, ev.status, eventChangedAt(rawEvent), rawEvent.txHash ?? rawEvent.id ?? "", rawEvent.ledger ?? 0],
+    );
+    logger.info(
+      { contractId: ev.vault, previousStatus, newStatus: ev.status },
+      "Processed vault_status_changed event",
+    );
+    return previousStatus;
+  }
+
+  /**
+   * Apply a `vault_manager_changed` event (#1068): update
+   * vaults.manager_address and append a vault_status_history row. Returns the
+   * previous manager (from the event, falling back to the stored value).
+   */
+  private async handleVaultManagerChanged(
+    ev: ParsedVaultManagerChangedEvent,
+    rawEvent: any,
+  ): Promise<string | null> {
+    const prev = await query<{ manager_address: string | null }>(
+      "SELECT manager_address FROM vaults WHERE contract_id = $1",
+      [ev.vault],
+    );
+    const previousManager = ev.oldManager ?? prev[0]?.manager_address ?? null;
+
+    await query(
+      "UPDATE vaults SET manager_address = $1, updated_at = NOW() WHERE contract_id = $2",
+      [ev.newManager, ev.vault],
+    );
+    await query(
+      `INSERT INTO vault_status_history
+         (contract_id, event_type, previous_manager, new_manager, changed_at, tx_hash, ledger)
+       VALUES ($1, 'manager_changed', $2, $3, $4, $5, $6)
+       ON CONFLICT (contract_id, event_type, tx_hash, ledger) DO NOTHING`,
+      [ev.vault, previousManager, ev.newManager, eventChangedAt(rawEvent), rawEvent.txHash ?? rawEvent.id ?? "", rawEvent.ledger ?? 0],
+    );
+    logger.info(
+      { contractId: ev.vault, previousManager, newManager: ev.newManager },
+      "Processed vault_manager_changed event",
+    );
+    return previousManager;
   }
 
   private async handleZkmeVerifierUpdated(
@@ -3664,6 +3774,145 @@ export function parseWhitelistUpdatedEvent(rawEvent: unknown): ParsedWhitelistUp
     if (!action) return null;
 
     return { address, action, caller };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1065: parseVaultStatusChangedEvent ───────────────────────────────────────
+
+export type VaultStatus = "active" | "inactive";
+
+export interface ParsedVaultStatusChangedEvent {
+  /** The vault whose status changed (not the emitting factory). */
+  vault: string;
+  status: VaultStatus;
+}
+
+function decodeVaultStatus(native: unknown): VaultStatus | null {
+  if (typeof native === "boolean") return native ? "active" : "inactive";
+  if (typeof native === "string") {
+    const s = native.toLowerCase();
+    return s === "active" || s === "inactive" ? s : null;
+  }
+  if (Array.isArray(native)) return decodeVaultStatus(native[0]);
+  if (native && typeof native === "object") {
+    const obj = native as Record<string, unknown>;
+    return decodeVaultStatus(obj["active"] ?? obj["status"]);
+  }
+  return null;
+}
+
+/**
+ * Parses the factory's `v_status` (a.k.a. `vault_status_changed`) event,
+ * emitted by `set_vault_status`. Topics are (symbol, vault) and the data is
+ * the new active flag. A vault emitting the event about itself may omit the
+ * vault topic, in which case the emitting contract is the vault.
+ */
+export function parseVaultStatusChangedEvent(rawEvent: unknown): ParsedVaultStatusChangedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 1 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "v_status" && eventName !== "vault_status_changed") return null;
+
+    const vault = topics.length > 1
+      ? String(scValToNative(parsedTopics[1]) ?? "")
+      : String(ev["contractId"] ?? "");
+    if (!vault) return null;
+
+    const status = decodeVaultStatus(scValToNative(parsedValue as xdr.ScVal));
+    if (!status) return null;
+
+    return { vault, status };
+  } catch {
+    return null;
+  }
+}
+
+// ── #1068: parseVaultManagerChangedEvent ──────────────────────────────────────
+
+export interface ParsedVaultManagerChangedEvent {
+  /** The vault whose manager changed. */
+  vault: string;
+  /** Previous manager as reported by the event, or null when not emitted. */
+  oldManager: string | null;
+  newManager: string;
+}
+
+/**
+ * Parses a `vault_manager_changed` (a.k.a. `mgr_chg`) event. The vault is the
+ * contract address in topics[1] when a factory emits the event, otherwise the
+ * emitting contract. The data is either (old_manager, new_manager), a struct
+ * with those fields, or just the new manager address.
+ */
+export function parseVaultManagerChangedEvent(rawEvent: unknown): ParsedVaultManagerChangedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 1 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "vault_manager_changed" && eventName !== "mgr_chg") return null;
+
+    // Only a contract address (C...) in topics[1] names the vault; anything
+    // else there is an account and the emitting contract is the vault.
+    const topicVault = topics.length > 1 ? String(scValToNative(parsedTopics[1]) ?? "") : "";
+    const vault = topicVault.startsWith("C") ? topicVault : String(ev["contractId"] ?? "");
+    if (!vault) return null;
+
+    const data = scValToNative(parsedValue as xdr.ScVal) as unknown;
+    let oldManager: unknown = null;
+    let newManager: unknown;
+    if (Array.isArray(data)) {
+      [oldManager, newManager] = data.length > 1 ? data : [null, data[0]];
+    } else if (data && typeof data === "object") {
+      const obj = data as Record<string, unknown>;
+      oldManager = obj["old_manager"] ?? obj["oldManager"] ?? null;
+      newManager = obj["new_manager"] ?? obj["newManager"];
+    } else {
+      newManager = data;
+    }
+
+    if (typeof newManager !== "string" || !newManager) return null;
+
+    return {
+      vault,
+      oldManager: typeof oldManager === "string" && oldManager ? oldManager : null,
+      newManager,
+    };
   } catch {
     return null;
   }

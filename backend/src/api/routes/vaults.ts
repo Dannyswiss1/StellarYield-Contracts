@@ -12,6 +12,7 @@ import {
   getVaultSnapshot,
   getVaultMetadataHistory,
   getWhitelistHistory,
+  getVaultStatusHistory,
   getTransferVolume,
   getVaultTopHolders,
   getVaultHolders,
@@ -300,6 +301,8 @@ vaultsRouter.get(
   validateQuery(whitelistHistoryQuerySchema),
   getWhitelistHistory,
 );
+// Status / manager change history: GET /api/v1/vaults/:contractId/status-history (#1065, #1068)
+vaultsRouter.get("/:contractId/status-history", validateParams(vaultParamsSchema), getVaultStatusHistory);
 // Share transfer volume for a vault token (#1074):
 // GET /api/v1/vaults/:contractId/transfer-volume?period=1d|7d|30d
 vaultsRouter.get(
