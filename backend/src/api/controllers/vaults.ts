@@ -5,6 +5,7 @@ import { VaultService, validateFilterTree, VAULT_FIELD_ALLOWLIST, pickVaultField
 import { readTotalAssets, readVaultState, readPaused, readCooperator, readCooperatorFeeBps } from "../../services/stellar.js";
 import { query } from "../../db/index.js";
 import { AppError, ErrorCode } from "../middleware/errors.js";
+import type { TransferVolumePeriod } from "../../types/index.js";
 import { sseManager } from "../../services/sseManager.js";
 
 const vaultService = new VaultService();
@@ -1724,6 +1725,25 @@ export async function getVaultTransferFees(
 }
 
 /**
+ * GET /api/v1/vaults/:contractId/transfer-volume?period=1d|7d|30d (#1074)
+ *
+ * Share trading activity for a vault token, used by the platform analytics
+ * widgets. The period is validated by the route schema against a fixed set, so
+ * an unrecognised value is a 400 rather than a silently widened window that
+ * would report a number the caller did not ask for.
+ */
+export async function getTransferVolume(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const period = req.query["period"] as TransferVolumePeriod;
+
+    res.json(await vaultService.getTransferVolume(contractId, period));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Issue #1075: GET /api/v1/vaults/:contractId/transfer-leaderboard?limit=10
  * Returns top addresses sorted by total transfer activity (sentCount + receivedCount) descending.
  */
@@ -1817,4 +1837,3 @@ export async function getVaultTransferLeaderboard(
     next(err);
   }
 }
-

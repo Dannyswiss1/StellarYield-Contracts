@@ -10,6 +10,7 @@ import {
   updateIndexerStartBlock,
   getAdminEvents,
   getVaultAudit,
+  getEpochAnomalies,
   backfillIndexer,
   pauseContractIndexing,
   resumeContractIndexing,
@@ -95,6 +96,9 @@ adminRouter.get("/indexer/start-block", getIndexerStartBlock);
 adminRouter.put("/indexer/start-block", requireApiKey({ role: "admin" }), updateIndexerStartBlock);
 adminRouter.get("/events", getAdminEvents);
 adminRouter.get("/vaults/:contractId/audit", getVaultAudit);
+// Epoch yield outliers detected by the daily scan (#1073). Read-only, so the
+// router-wide readonly requirement is enough.
+adminRouter.get("/vaults/:contractId/epoch-anomalies", getEpochAnomalies);
 adminRouter.get("/vaults/archived", getArchivedVaults);
 adminRouter.patch("/vaults/:contractId/archive-exclusion", requireApiKey({ role: "admin" }), toggleVaultArchiveExclusion);
 adminRouter.get("/archive/verify", verifyArchiveConsistency);
