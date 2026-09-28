@@ -9,6 +9,12 @@ const { version } = JSON.parse(
   readFileSync(new URL("../../../package.json", import.meta.url), "utf-8"),
 ) as { version: string };
 
+// Captured once, when this module is first loaded at process startup (#830),
+// so uptimeSeconds is relative to process start and resets to 0 on restart.
+// process.hrtime.bigint() is a monotonic clock, unaffected by system clock
+// adjustments, so uptimeSeconds only ever increases between health checks.
+const startedAtHrTime = process.hrtime.bigint();
+
 export const healthRouter = Router();
 
 const FACTORY_HEALTH_CHECK_TIMEOUT_MS = 3000;
@@ -90,12 +96,13 @@ healthRouter.get("/", async (_req, res) => {
     contractId,
   };
   const sseConnections = sseManager.getSseConnectionCount();
+  const uptimeSeconds = Number(process.hrtime.bigint() - startedAtHrTime) / 1e9;
 
   try {
     await pool.query("SELECT 1");
-    res.json({ version, status: "ok", dbPool, factory, rpc, memory, sseConnections });
+    res.json({ version, status: "ok", uptimeSeconds, dbPool, factory, rpc, memory, sseConnections });
   } catch {
-    res.status(503).json({ version, status: "error", dbPool, factory, rpc, memory, sseConnections });
+    res.status(503).json({ version, status: "error", uptimeSeconds, dbPool, factory, rpc, memory, sseConnections });
   }
 });
 
