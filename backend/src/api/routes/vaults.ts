@@ -12,6 +12,7 @@ import {
   getVaultSnapshot,
   getVaultMetadataHistory,
   getWhitelistHistory,
+  getVaultStatusHistory,
   getVaultTopHolders,
   getVaultHolders,
   getVaultHolderCount,
@@ -292,6 +293,8 @@ vaultsRouter.get(
   validateQuery(whitelistHistoryQuerySchema),
   getWhitelistHistory,
 );
+// Status / manager change history: GET /api/v1/vaults/:contractId/status-history (#1065, #1068)
+vaultsRouter.get("/:contractId/status-history", validateParams(vaultParamsSchema), getVaultStatusHistory);
 // Get vault TVL history: GET /api/v1/vaults/:contractId/tvl-history
 vaultsRouter.get(
   "/:contractId/tvl-history",
