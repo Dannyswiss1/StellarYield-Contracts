@@ -151,3 +151,45 @@ describe("GET /health memory usage", () => {
   });
 });
 
+describe("GET /health uptime tracking (#830)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    process.env["VAULT_FACTORY_CONTRACT_ID"] = "";
+    getLatestLedgerMock.mockResolvedValue({ sequence: 1000 });
+  });
+
+  it("reports uptimeSeconds as a non-negative number", async () => {
+    const app = await buildApp();
+    const res = await supertest(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.uptimeSeconds).toBe("number");
+    expect(res.body.uptimeSeconds).toBeGreaterThanOrEqual(0);
+  });
+
+  it("increases monotonically between successive health checks", async () => {
+    const app = await buildApp();
+    const res1 = await supertest(app).get("/health");
+    const res2 = await supertest(app).get("/health");
+
+    expect(res2.body.uptimeSeconds).toBeGreaterThanOrEqual(res1.body.uptimeSeconds);
+  });
+
+  it("resets to a fresh, near-zero value when the module is reloaded (process restart)", async () => {
+    const firstApp = await buildApp();
+    // Let some time pass so the first process's uptime is clearly non-zero.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const firstRes = await supertest(firstApp).get("/health");
+    expect(firstRes.body.uptimeSeconds).toBeGreaterThan(0);
+
+    // vi.resetModules() + re-import simulates a process restart: the module's
+    // top-level `process.hrtime.bigint()` capture runs again from scratch.
+    vi.resetModules();
+    const restartedApp = await buildApp();
+    const restartedRes = await supertest(restartedApp).get("/health");
+
+    expect(restartedRes.body.uptimeSeconds).toBeLessThan(firstRes.body.uptimeSeconds);
+  });
+});
+

@@ -174,7 +174,7 @@ function registerPaths(): void {
     responses: {
       200: {
         description: "Server is healthy",
-        content: { "application/json": { schema: z.object({ version: z.string().openapi({ example: "0.1.0" }), status: z.string().openapi({ example: "ok" }) }) } },
+        content: { "application/json": { schema: z.object({ version: z.string().openapi({ example: "0.1.0" }), status: z.string().openapi({ example: "ok" }), uptimeSeconds: z.number().openapi({ example: 3600.42 }) }) } },
       },
       503: {
         description: "Service unavailable",
@@ -191,7 +191,7 @@ function registerPaths(): void {
     responses: {
       200: {
         description: "Server is healthy",
-        content: { "application/json": { schema: z.object({ version: z.string().openapi({ example: "0.1.0" }), status: z.string().openapi({ example: "ok" }) }) } },
+        content: { "application/json": { schema: z.object({ version: z.string().openapi({ example: "0.1.0" }), status: z.string().openapi({ example: "ok" }), uptimeSeconds: z.number().openapi({ example: 3600.42 }) }) } },
       },
       503: {
         description: "Service unavailable",
