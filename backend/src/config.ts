@@ -78,6 +78,13 @@ export const envSchema = z.object({
   WEBHOOK_SECRET: z
     .string()
     .default(""),
+  // Issue #1062: hours a rotated-out webhook secret stays valid alongside the
+  // new one, so receivers can roll over without downtime.
+  SECRET_ROTATION_WINDOW_HOURS: z
+    .string()
+    .default("24")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(0)),
   LOG_LEVEL: z
     .string()
     .default("info"),
@@ -355,6 +362,7 @@ export const config = {
   })(),
 
   webhookSecret: parsed.data.WEBHOOK_SECRET,
+  secretRotationWindowHours: parsed.data.SECRET_ROTATION_WINDOW_HOURS,
   logLevel: parsed.data.LOG_LEVEL,
 
   rateLimit: {

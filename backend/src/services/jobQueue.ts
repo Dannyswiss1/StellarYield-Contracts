@@ -110,11 +110,12 @@ class JobQueue {
       const { processWebhookDelivery } = await import("./webhookWorker.js");
       for (const job of jobs) {
         await runWithMetrics("webhook-deliver", async () => {
-          const { webhookId, payload } = job.data as {
+          const { webhookId, payload, deliveryId } = job.data as {
             webhookId: number;
             payload: string;
+            deliveryId?: number;
           };
-          await processWebhookDelivery(this.boss!, webhookId, payload);
+          await processWebhookDelivery(this.boss!, webhookId, payload, deliveryId);
         });
       }
     });

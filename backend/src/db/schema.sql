@@ -106,7 +106,28 @@ CREATE TABLE IF NOT EXISTS webhooks (
   channel         TEXT DEFAULT 'webhook',
   consecutive_failures INT DEFAULT 0,
   priority        INT DEFAULT 0,
-  fallback_channel INT
+  fallback_channel INT,
+  -- Circuit breaker (#1061)
+  circuit_open    BOOLEAN NOT NULL DEFAULT FALSE,
+  circuit_opened_at TIMESTAMPTZ,
+  -- Secret rotation transition window (#1062)
+  previous_secret TEXT,
+  secret_rotated_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id              SERIAL PRIMARY KEY,
+  webhook_id      INT NOT NULL REFERENCES webhooks(id),
+  payload         JSONB NOT NULL,
+  attempt         INT NOT NULL DEFAULT 1,
+  next_retry_at   TIMESTAMPTZ,
+  delivered_at    TIMESTAMPTZ,
+  last_error      TEXT,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  -- pending | failed | failed_permanent | delivered (#1061)
+  status          TEXT NOT NULL DEFAULT 'pending',
+  -- source delivery for a replay (#1063)
+  replayed_from   INT REFERENCES webhook_deliveries(id)
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -124,7 +145,9 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
   target           TEXT NOT NULL,
   ip_address       TEXT,
   created_at       TIMESTAMPTZ DEFAULT NOW(),
-  request_body_hash TEXT NOT NULL
+  request_body_hash TEXT NOT NULL,
+  -- structured context, e.g. { blockNumber, txHash } for VAULT_INDEXED (#1064)
+  details          JSONB
 );
 
 -- Feature flags for gradual rollout (#916)

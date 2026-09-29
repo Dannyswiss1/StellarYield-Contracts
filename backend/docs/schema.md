@@ -463,6 +463,10 @@ Configured webhook endpoints for event notifications.
 | `allowed_methods` | `TEXT[]` | YES | — | HTTP methods this key may use; `NULL` means all methods (#935) |
 | `active` | `BOOLEAN` | YES | `true` | Whether the webhook is active |
 | `consecutive_failures` | `INT` | NOT NULL | `0` | Consecutive delivery failures |
+| `circuit_open` | `BOOLEAN` | NOT NULL | `false` | Circuit breaker open; deliveries are skipped (#1061) |
+| `circuit_opened_at` | `TIMESTAMPTZ` | YES | — | When the circuit last opened (#1061) |
+| `previous_secret` | `TEXT` | YES | — | Retired secret kept live during the rotation window (#1062) |
+| `secret_rotated_at` | `TIMESTAMPTZ` | YES | — | When `secret` was last rotated (#1062) |
 | `created_at` | `TIMESTAMPTZ` | YES | `NOW()` | Row creation timestamp |
 
 **Primary key:** `id`
@@ -482,12 +486,16 @@ Delivery attempt log for webhook notifications.
 | `next_retry_at` | `TIMESTAMPTZ` | YES | — | Next scheduled retry |
 | `delivered_at` | `TIMESTAMPTZ` | YES | — | Successful delivery timestamp |
 | `last_error` | `TEXT` | YES | — | Last error message |
+| `status` | `TEXT` | NOT NULL | `'pending'` | `pending` / `failed` / `failed_permanent` / `delivered` (#1061) |
+| `replayed_from` | `INT` | YES | — | Source delivery when this row is a replay (#1063) |
 | `created_at` | `TIMESTAMPTZ` | YES | `NOW()` | Row creation timestamp |
 
 **Primary key:** `id`  
-**Foreign keys:** `webhook_id` → `webhooks(id)`  
+**Foreign keys:** `webhook_id` → `webhooks(id)`, `replayed_from` → `webhook_deliveries(id)`  
 **Indexes:**
 - `idx_webhook_deliveries_retry` on `(next_retry_at)` WHERE `delivered_at IS NULL AND attempt < 6`
+- `idx_webhook_deliveries_status` on `(webhook_id, status)`
+- `idx_webhook_deliveries_replayed_from` on `(replayed_from)` WHERE `replayed_from IS NOT NULL`
 
 ---
 
@@ -650,6 +658,7 @@ Audit trail for admin API actions.
 | `target` | `TEXT` | NOT NULL | — | Target resource identifier |
 | `ip_address` | `TEXT` | YES | — | Requesting IP address |
 | `request_body_hash` | `TEXT` | NOT NULL | — | SHA hash of the request body |
+| `details` | `JSONB` | YES | — | Structured context, e.g. `{ blockNumber, txHash }` for `VAULT_INDEXED` (#1064) |
 | `created_at` | `TIMESTAMPTZ` | YES | `NOW()` | Row creation timestamp |
 
 **Primary key:** `id`

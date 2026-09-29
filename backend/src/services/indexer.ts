@@ -23,6 +23,7 @@ import { cacheDel } from "../cache/redis.js";
 import { sseService } from "./sse.js";
 import { recordRpcSuccess, recordRpcError } from "./rpcMonitor.js";
 import { TOPIC_EVENT_TYPES } from "./indexerEventTypes.js";
+import { logSystemAudit } from "./adminAuditLog.js";
 
 // ── Lightweight trace spans (#827) ────────────────────────────────────────────
 // No external tracing dependency — spans are emitted as structured pino log
@@ -723,7 +724,7 @@ export class Indexer {
 
     const vaultCreated = parseVaultCreatedEvent(event);
     if (vaultCreated) {
-      await this.handleVaultCreated(event.contractId ?? "", vaultCreated);
+      await this.handleVaultCreated(event.contractId ?? "", vaultCreated, event);
       await this.recordEvent(event, "vault_created");
       try {
         await this.notificationService?.notify("vault_created", vaultCreated as any);
@@ -1373,6 +1374,7 @@ export class Indexer {
       minDeposit: string | null;
       maxDepositPerUser: string | null;
     },
+    rawEvent?: { ledger?: number; id?: string; txHash?: string } | null,
   ): Promise<void> {
     logger.info(
       { vault: vaultCreated.contractId, factoryId, name: vaultCreated.name },
@@ -1403,6 +1405,23 @@ export class Indexer {
     });
 
     this.watchedContractIds.add(vaultCreated.contractId);
+
+    // Compliance trace (#1064): record where this vault came from. The insert
+    // is replay-guarded so a backfill re-reading the ledger range cannot
+    // produce a second entry for the same vault.
+    try {
+      await logSystemAudit(
+        "VAULT_INDEXED",
+        vaultCreated.contractId,
+        {
+          blockNumber: rawEvent?.ledger ?? null,
+          txHash: rawEvent?.txHash ?? rawEvent?.id ?? "",
+        },
+        { conflictTarget: true },
+      );
+    } catch (e) {
+      logger.warn({ err: e, vault: vaultCreated.contractId }, "Failed to write VAULT_INDEXED audit entry");
+    }
   }
 
   private async handleCancelFunding(contractId: string): Promise<void> {

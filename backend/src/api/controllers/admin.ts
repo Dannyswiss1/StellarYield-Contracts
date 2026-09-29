@@ -19,6 +19,7 @@ import { logger } from "../../logger.js";
 import { createAdminSessionToken, refreshAdminSessionToken } from "../middleware/auth.js";
 import { getApiKeyUsage } from "../../cache/redis.js";
 import { logAdminAudit } from "../../services/adminAuditLog.js";
+import { generateWebhookSecret, secretRotationWindowHours } from "../../services/webhookSignature.js";
 
 const OPENAPI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../openapi");
 
@@ -715,12 +716,14 @@ export async function getWebhookDeliveries(req: Request, res: Response, next: Ne
     const rows = await query<{
       id: number;
       attempt: number;
+      status: string;
       delivered_at: Date | null;
       last_error: string | null;
       next_retry_at: Date | null;
+      replayed_from: number | null;
       created_at: Date;
     }>(
-      `SELECT id, attempt, delivered_at, last_error, next_retry_at, created_at
+      `SELECT id, attempt, status, delivered_at, last_error, next_retry_at, replayed_from, created_at
        FROM webhook_deliveries
        WHERE webhook_id = $1
        ORDER BY created_at DESC
@@ -732,9 +735,11 @@ export async function getWebhookDeliveries(req: Request, res: Response, next: Ne
       data: rows.map((r) => ({
         id: r.id,
         attempt: r.attempt,
+        status: r.status,
         deliveredAt: r.delivered_at,
         lastError: r.last_error,
         nextRetryAt: r.next_retry_at,
+        replayedFrom: r.replayed_from,
         createdAt: r.created_at,
       })),
       total,
@@ -777,6 +782,162 @@ export async function bulkToggleWebhooks(req: Request, res: Response, next: Next
     await logAdminAudit(req, "bulk_toggle_webhooks", "/api/v1/admin/webhooks/bulk/toggle");
 
     res.json({ updated: rows.length, ids: rows.map((r) => r.id), active });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /admin/webhooks/:id/circuit-reset (#1061)
+ *
+ * Closes an open circuit so deliveries resume on the next triggered event.
+ * Also clears the failure counter that opened it, otherwise the very next
+ * failure would immediately re-trip the breaker.
+ */
+export async function resetWebhookCircuit(req: Request, res: Response, next: NextFunction) {
+  try {
+    const webhookId = parseInt(req.params["id"] as string, 10);
+    if (isNaN(webhookId) || webhookId <= 0) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid webhook ID" });
+      return;
+    }
+
+    const rows = await query<{ id: number; circuit_open: boolean }>(
+      `UPDATE webhooks
+          SET circuit_open = FALSE, circuit_opened_at = NULL, consecutive_failures = 0
+        WHERE id = $1
+        RETURNING id, circuit_open`,
+      [webhookId],
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Webhook not found" });
+      return;
+    }
+
+    await logAdminAudit(req, "webhook_circuit_reset", `/api/v1/admin/webhooks/${webhookId}/circuit-reset`);
+
+    res.json({ id: webhookId, circuitOpen: false, consecutiveFailures: 0 });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /admin/webhooks/:id/rotate-secret (#1062)
+ *
+ * Issues a fresh HMAC secret and keeps the outgoing one valid for
+ * SECRET_ROTATION_WINDOW_HOURS so receivers can roll over without downtime.
+ * The new secret is returned once; neither secret is ever readable again.
+ */
+export async function rotateWebhookSecret(req: Request, res: Response, next: NextFunction) {
+  try {
+    const webhookId = parseInt(req.params["id"] as string, 10);
+    if (isNaN(webhookId) || webhookId <= 0) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid webhook ID" });
+      return;
+    }
+
+    const newSecret = generateWebhookSecret();
+    const windowHours = secretRotationWindowHours();
+
+    const rows = await query<{ id: number; had_secret: boolean }>(
+      `UPDATE webhooks
+          SET previous_secret = secret,
+              secret = $1,
+              secret_rotated_at = NOW()
+        WHERE id = $2
+        RETURNING id, previous_secret IS NOT NULL AS had_secret`,
+      [newSecret, webhookId],
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Webhook not found" });
+      return;
+    }
+
+    await logAdminAudit(req, "webhook_rotate_secret", `/api/v1/admin/webhooks/${webhookId}/rotate-secret`);
+
+    res.json({
+      id: webhookId,
+      secret: newSecret,
+      rotationWindowHours: windowHours,
+      previousSecretRetained: rows[0].had_secret,
+      rotatesAt: new Date(Date.now() + windowHours * 60 * 60 * 1000).toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /admin/webhooks/deliveries/:deliveryId/replay (#1063)
+ *
+ * Re-enqueues a past delivery verbatim from the delivery log, without
+ * re-indexing the underlying event. The clone is a new row that references
+ * the source via `replayed_from`.
+ */
+export async function replayWebhookDelivery(req: Request, res: Response, next: NextFunction) {
+  try {
+    const deliveryId = parseInt(req.params["deliveryId"] as string, 10);
+    if (isNaN(deliveryId) || deliveryId <= 0) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid delivery ID" });
+      return;
+    }
+
+    const source = await query<{
+      id: number;
+      webhook_id: number;
+      payload: string;
+      circuit_open: boolean;
+      active: boolean;
+    }>(
+      `SELECT wd.id, wd.webhook_id, wd.payload::text AS payload,
+              w.circuit_open, w.active
+         FROM webhook_deliveries wd
+         JOIN webhooks w ON w.id = wd.webhook_id
+        WHERE wd.id = $1`,
+      [deliveryId],
+    );
+    if (source.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Delivery not found" });
+      return;
+    }
+
+    const original = source[0];
+    if (original.circuit_open) {
+      res.status(409).json({
+        error: "Conflict",
+        message:
+          "Webhook circuit is open; reset it before replaying deliveries for this endpoint",
+      });
+      return;
+    }
+
+    const inserted = await query<{ id: number }>(
+      `INSERT INTO webhook_deliveries
+         (webhook_id, payload, attempt, next_retry_at, replayed_from, status)
+       VALUES ($1, $2, 1, NOW(), $3, 'pending')
+       RETURNING id`,
+      [original.webhook_id, original.payload, original.id],
+    );
+
+    await jobQueue.send("webhook-deliver", {
+      webhookId: original.webhook_id,
+      payload: original.payload,
+      deliveryId: inserted[0].id,
+    });
+
+    await logAdminAudit(
+      req,
+      "webhook_replay_delivery",
+      `/api/v1/admin/webhooks/deliveries/${deliveryId}/replay`,
+    );
+
+    res.status(201).json({
+      deliveryId: inserted[0].id,
+      replayedFrom: original.id,
+      webhookId: original.webhook_id,
+      status: "queued",
+    });
   } catch (err) {
     next(err);
   }

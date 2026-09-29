@@ -20,6 +20,9 @@ import {
   updateApiKeyDescription,
   getWebhookDeliveries,
   bulkToggleWebhooks,
+  resetWebhookCircuit,
+  rotateWebhookSecret,
+  replayWebhookDelivery,
   getArchivedVaults,
   getTotalSupplyConsistency,
   getDbStats,
@@ -109,9 +112,15 @@ adminRouter.get("/api-keys/:id/usage", requireApiKey({ role: "admin" }), getApiK
 adminRouter.delete("/api-keys/:id", requireApiKey({ role: "admin" }), deleteApiKey);
 adminRouter.patch("/api-keys/:id/description", requireApiKey({ role: "admin" }), updateApiKeyDescription);
 adminRouter.get("/api-diff", getApiDiff);
-adminRouter.get("/webhooks/:id/deliveries", getWebhookDeliveries);
 // Issue #1006: bulk webhook enable/disable
 adminRouter.post("/webhooks/bulk/toggle", requireApiKey({ role: "admin" }), bulkToggleWebhooks);
+// Issues #1061/#1062/#1063: circuit breaker reset, secret rotation, delivery replay.
+// Registered before /webhooks/:id/deliveries so the literal `deliveries` segment
+// is not swallowed by the `:id` param.
+adminRouter.post("/webhooks/deliveries/:deliveryId/replay", requireApiKey({ role: "admin" }), replayWebhookDelivery);
+adminRouter.get("/webhooks/:id/deliveries", getWebhookDeliveries);
+adminRouter.post("/webhooks/:id/circuit-reset", requireApiKey({ role: "admin" }), resetWebhookCircuit);
+adminRouter.post("/webhooks/:id/rotate-secret", requireApiKey({ role: "admin" }), rotateWebhookSecret);
 adminRouter.get("/db/stats", getDbStats);
 adminRouter.get("/db/slow-queries", getSlowQueries);
 adminRouter.get("/fees", getAdminFees);
